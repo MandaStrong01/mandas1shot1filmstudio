@@ -45,6 +45,7 @@ const PLANS = [
 const KINDS = ["Movie", "Short film", "Video series", "Cartoon", "Animated series", "Documentary", "Music video", "Short clip", "Ad / promo", "Trailer", "Kids' story", "Explainer"];
 // NO LOOPING, LOW COST: engine clips are 5 s and play at half speed (10 s on screen), so one new shot fills every 10 s and nothing repeats.
 const SHOT_SECS = 10, SLOW = 0.5, SHOT_CAP = 360;
+const CLONE_CACHE = new Map();
 const ANGLES = ["wide establishing shot", "close-up on the faces", "slow push-in from behind", "over-the-shoulder shot", "low angle looking up", "high angle looking down", "side view, tracking along", "detail shot of hands and objects", "slow pull-back to reveal the room", "medium two-shot, gentle camera drift"];
 const slowOf = s => (s && s.source === "engine") ? SLOW : 1;
 const GENRES = ["Drama", "Comedy", "Family", "Holiday", "Adventure", "Fantasy", "Sci-fi", "Romance", "Action", "Mystery", "Thriller", "Horror", "Western", "Historical", "Inspirational", "Educational"];
@@ -363,7 +364,7 @@ export default function Studio() {
   useEffect(() => { (async () => { try { const all = await dbAll(); const x = all.find(y => y.id === "mfs_myrec" && y.blob); if (x) setMyRec(p => p || { name: (x.meta && x.meta.name) || "audio", blob: x.blob, url: URL.createObjectURL(x.blob) }); } catch (e) { } })(); }, []);
   // ── CHARACTER VOICES YOU UPLOAD (e.g. Doxy, Lily, Ethan): kept on this device, one per file ──
   const [charRecs, setCharRecs] = useState([]); // {name,blob,url,dbId,cloneId}
-  useEffect(() => { (async () => { try { const all = await dbAll(); const mine = all.filter(x => String(x.id).startsWith("mfs_cvoice_") && x.blob).sort((x, y) => String(x.id).localeCompare(String(y.id))); if (mine.length) setCharRecs(p => p.length ? p : mine.map(x => ({ name: (x.meta && x.meta.name) || "voice", blob: x.blob, url: URL.createObjectURL(x.blob), dbId: x.id, cloneId: (x.meta && x.meta.cloneId) || "" }))); } catch (e) { } })(); }, []);
+  useEffect(() => { (async () => { try { const all = await dbAll(); const mine = all.filter(x => String(x.id).startsWith("mfs_cvoice_") && x.blob).sort((x, y) => String(x.id).localeCompare(String(y.id))); if (mine.length) setCharRecs(p => p.length ? p : mine.map(x => ({ name: (x.meta && x.meta.name) || "voice", blob: x.blob, url: URL.createObjectURL(x.blob), dbId: x.id, cloneId: (x.meta && x.meta.cloneId) || "", cloneAt: (x.meta && x.meta.cloneAt) || 0 }))); } catch (e) { } })(); }, []);
   const addCharRecs = (files) => { Array.from(files || []).forEach((f, k) => { const nm = String(f.name || "voice").replace(/\.[a-z0-9]+$/i, ""); const did = "mfs_cvoice_" + Date.now() + "_" + String(k).padStart(3, "0"); setCharRecs(p => [...p, { name: nm, blob: f, url: URL.createObjectURL(f), dbId: did, cloneId: "" }]); dbPut(did, f, { name: nm }); }); };
   // Which uploaded voice each character uses. Read from the boxes:
   //   "DOXY'S VOICE:" heading, then "Santa: ..." lines under it   — or —   "Santa: use Doxy's saved voice"
@@ -387,9 +388,13 @@ export default function Studio() {
     for (const sp of speakers) { const k = norm(sp.label || sp.key); if (!out[k]) { const r = findRec(sp.label || sp.key); const lb = String(sp.label || sp.key).toLowerCase().replace(/[^a-z]/g, ""); if (r && lb && new RegExp("(^|[^a-z])" + lb + "([^a-z]|$)", "i").test(r.name)) out[k] = r; } }
     const res = {}; for (const sp of speakers) { const r = out[norm(sp.label || sp.key)]; if (r) res[sp.key] = r; } return res;
   };
+  // A voice file is copied ONCE and the copy is reused for every character that uses it (each copy costs credit).
+  // A copy is reused for up to 5 days, then made fresh.
   const cloneOf = async (r) => {
-    if (r.cloneId && !/^mm_/.test(r.cloneId)) return r.cloneId; // an old copied-voice id from the empty account is not reused
-    try { const uri = await readAsDataURL(r.blob.slice(0, 1500000, r.blob.type || "audio/mpeg")); const vid = await engineCloneVoice(uri); if (vid) { r.cloneId = vid; dbPut(r.dbId, r.blob, { name: r.name, cloneId: vid }); return vid; } } catch (e) { }
+    const key = (r.name || "") + ":" + (r.blob ? r.blob.size : 0), now = Date.now(), fresh = 5 * 86400000;
+    const hit = CLONE_CACHE.get(key); if (hit && now - hit.at < fresh) { r.cloneId = hit.id; r.cloneAt = hit.at; return hit.id; }
+    if (r.cloneId && r.cloneAt && now - r.cloneAt < fresh) { CLONE_CACHE.set(key, { id: r.cloneId, at: r.cloneAt }); return r.cloneId; }
+    try { const uri = await readAsDataURL(r.blob.slice(0, 1500000, r.blob.type || "audio/mpeg")); const vid = await engineCloneVoice(uri); if (vid) { r.cloneId = vid; r.cloneAt = now; CLONE_CACHE.set(key, { id: vid, at: now }); dbPut(r.dbId, r.blob, { name: r.name, cloneId: vid, cloneAt: now }); return vid; } } catch (e) { }
     return "";
   };
   // ── ENGINE TO COMPLETE NARRATION: your recording plays first, the engine reads the rest ──
@@ -523,7 +528,7 @@ export default function Studio() {
 
   async function voiceIt(text, lang) {
     let t = text; if (lang && lang !== "English") t = await translateText(text, lang);
-    const cast = msParseCast(t); let parts = [];
+    const cast = msParseCast(t); let parts = []; let lostLines = 0;
     if ((charVoices || charRecs.length) && cast.speakers.length >= 2) {
       const cmap = msCastVoices(cast.speakers, narrator, t);
       const umap = charVoiceMap(cast.speakers); const uid = {};
@@ -543,12 +548,13 @@ export default function Studio() {
         const sg = cast.segments[i]; const vc = sg.sp ? cmap[sg.sp] : null;
         setStage("Voicing " + (sg.sp ? (cast.speakers.find(x => x.key === sg.sp) || {}).label : "narrator") + " — " + (i + 1) + " of " + cast.segments.length);
         const meta = (sg.sp && uid[sg.sp]) ? { voice: uid[sg.sp], speed: Number(speed) || 1 } : vc ? { voice: vc.engineVoice || vc.id, gender: vc.gender || "", origin: vc.origin || "", speed: Number(speed) || 1 } : voiceMeta(narrator);
-        const r = await msVoiceText(sg.text, { ...meta, language: lang && lang !== "English" ? lang : "" }); parts.push(...r.parts);
+        const r = await msVoiceText(sg.text, { ...meta, language: lang && lang !== "English" ? lang : "" }); parts.push(...r.parts); if (r.failed) lostLines += r.failed;
       }
     } else {
       const r = await msVoiceText(t, { ...voiceMeta(narrator), language: lang && lang !== "English" ? lang : "" }, (i, n) => setStage("MandaStrong Engine — voicing part " + i + " of " + n + (lang && lang !== "English" ? " (" + lang + ")" : ""))); parts = r.parts;
     }
     if (!parts.length) throw new Error("The voice engine returned no audio");
+    if (lostLines) setErr(lostLines + " spoken line" + (lostLines > 1 ? "s" : "") + " could not be voiced and will be silent. Press Re-voice my film to try again.");
     return { blob: new Blob(parts, { type: parts[0].type || "audio/mpeg" }), text: t };
   }
 
