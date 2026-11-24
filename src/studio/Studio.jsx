@@ -513,7 +513,8 @@ export default function Studio() {
       // Find the project with the MOST finished scenes. A newer, emptier project never hides your real footage.
       const counts = {}; all.forEach(x => { const m = /^(.*)_scene_\d+$/.exec(String(x.id)); if (m && x.blob) counts[m[1]] = (counts[m[1]] || 0) + 1; });
       const best = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
-      if (best && best !== projectId.current && (counts[best] || 0) > (counts[projectId.current] || 0)) { projectId.current = best; save("pid", best); }
+      // After "Start a new film" the page stays blank; every earlier film waits under MY PROJECTS.
+      if (!load("fresh", false) && best && best !== projectId.current && (counts[best] || 0) > (counts[projectId.current] || 0)) { projectId.current = best; save("pid", best); }
       const pre = projectId.current + "_scene_";
       const sc = all.filter(x => String(x.id).startsWith(pre) && x.blob).sort((a, b) => a.meta.i - b.meta.i);
       if (!sc.length) return;
@@ -817,7 +818,9 @@ export default function Studio() {
     if (!subActive) { setErr("Start your 7-day free trial to make a film. Press the 7-day free trial button."); return; }
     setBusy(true); setDone(false); setPct(2);
     let wl = null; try { wl = await navigator.wakeLock.request("screen"); } catch (e) { }
-    projectId.current = "p" + Date.now(); save("pid", projectId.current);
+    projectId.current = "p" + Date.now(); save("pid", projectId.current); save("fresh", false);
+    // Every film is filed under MY PROJECTS from the moment it starts, with its words, so it can be opened again.
+    try { await dbPut(projectId.current + "_meta", new Blob([JSON.stringify({ title, kind, minutes, ratio, style, narr, script, onePrompt })], { type: "application/json" }), { title: (title || "").trim(), kind, minutes, startedAt: new Date().toISOString(), hint: String(onePrompt || narr || script || "").trim().slice(0, 60) }); } catch (e) { }
     try {
       // 1 — scene list
       setStage("Reading your script and writing the scenes…");
@@ -936,6 +939,34 @@ export default function Studio() {
   const loadSaved = async () => { const all = await dbAll(); setSavedFilms(all.filter(x => String(x.id).includes("_final_") && x.blob).sort((a, b) => String(b.id).localeCompare(String(a.id))).map(x => ({ id: x.id, name: (x.meta && x.meta.name) || "My film", blob: x.blob }))); };
   useEffect(() => { loadSaved(); }, []);
   const deleteSaved = async (id) => { try { const db = await idb(); const tx = db.transaction("f", "readwrite"); tx.objectStore("f").delete(id); await new Promise(res => { tx.oncomplete = res; tx.onerror = res; }); } catch (e) { } loadSaved(); };
+  // MY PROJECTS: every film ever started on this device, newest first. Open one to carry on; nothing is lost by starting a new film.
+  const [projects, setProjects] = useState([]);
+  const loadProjects = async () => {
+    const all = await dbAll(); const by = {};
+    all.forEach(x => { const m = /^(p\d+)_(.*)$/.exec(String(x.id)); if (!m || !x.blob) return; const p = by[m[1]] || (by[m[1]] = { id: m[1], scenes: 0, finals: 0, meta: null, narr: false }); if (/^scene_\d+$/.test(m[2])) p.scenes++; else if (m[2].startsWith("final_")) p.finals++; else if (m[2] === "meta") p.meta = x.meta || {}; else if (m[2] === "narr") p.narr = true; });
+    setProjects(Object.values(by).filter(p => p.scenes || p.finals || p.meta).sort((a, b) => Number(b.id.slice(1)) - Number(a.id.slice(1))).map(p => { const mt = p.meta || {}; const nm = mt.title || mt.hint || "Film"; return { id: p.id, name: nm, scenes: p.scenes, finals: p.finals, when: new Date(mt.startedAt || Number(p.id.slice(1))).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) }; }));
+  };
+  useEffect(() => { loadProjects(); }, [done, busy]);
+  const openProject = async (pid) => {
+    if (busy) { setErr("Wait for the film in progress, or stop it first."); return; }
+    const all = await dbAll(); const pre = pid + "_scene_";
+    const sc = all.filter(x => String(x.id).startsWith(pre) && x.blob).sort((a, b) => (a.meta.i || 0) - (b.meta.i || 0));
+    projectId.current = pid; save("pid", pid); save("fresh", false);
+    setScenes(sc.map(x => ({ text: x.meta.text || "", status: "done", blob: x.blob, url: URL.createObjectURL(x.blob), source: x.meta.source })));
+    const n = all.find(x => x.id === pid + "_narr"); if (n) { setNarrUrl(URL.createObjectURL(n.blob)); setNarrText(n.meta.text || ""); setNarrSecs(n.meta.secs || 0); } else { setNarrUrl(""); setNarrText(""); setNarrSecs(0); }
+    const m = all.find(x => x.id === pid + "_music"); setMusicUrl(m ? URL.createObjectURL(m.blob) : "");
+    const mt = all.find(x => x.id === pid + "_meta" && x.blob);
+    if (mt) { try { const o = JSON.parse(await mt.blob.text()); if (o.title != null) setTitle(o.title); if (o.kind) setKind(o.kind); if (o.minutes) setMinutes(o.minutes); if (o.narr != null) setNarr(o.narr); if (o.script != null) setScript(o.script); if (o.onePrompt != null) setOnePrompt(o.onePrompt); } catch (e) { } }
+    setExp({ busy: false, pct: 0, msg: "", files: [] }); setClock(0); setCur(0); setPct(0); setErr("");
+    setDone(sc.length > 0); setStage(sc.length ? "Project opened: " + (mt && mt.meta && (mt.meta.title || mt.meta.hint) || "Film") : "This project has no finished scenes. Its words are back in the boxes.");
+    try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (e) { }
+  };
+  const deleteProject = async (p) => {
+    if (!window.confirm("Delete \"" + p.name + "\" and all its scenes? This cannot be undone.")) return;
+    try { const all = await dbAll(); const db = await idb(); const tx = db.transaction("f", "readwrite"); for (const x of all) if (String(x.id).startsWith(p.id + "_")) tx.objectStore("f").delete(x.id); await new Promise(res => { tx.oncomplete = res; tx.onerror = res; }); } catch (e) { }
+    if (projectId.current === p.id) { setScenes([]); setDone(false); setNarrUrl(""); setMusicUrl(""); }
+    loadProjects(); loadSaved();
+  };
   const stopExp = useRef(false); const pvRef = useRef(null);
   async function renderFile(opts) {
     const r = opts.ratio, [W, H] = sizeFor(r, quality);
@@ -1148,7 +1179,8 @@ export default function Studio() {
     await dbPut(projectId.current + "_project", blob, {});
     await saveFile({ blob, name: (title || "My_Film").replace(/[^\w]+/g, "_") + "_Project.json", url: URL.createObjectURL(blob) });
   };
-  const newFilm = async () => { const all = await dbAll(); const db = await idb(); const tx = db.transaction("f", "readwrite"); for (const x of all) if (String(x.id).startsWith(projectId.current) && !String(x.id).includes("_final_")) tx.objectStore("f").delete(x.id); await new Promise(res => { tx.oncomplete = res; tx.onerror = res; }); setScenes([]); setDone(false); setNarrUrl(""); setMusicUrl(""); setExp({ busy: false, pct: 0, msg: "", files: [] }); setStage(""); setPct(0); setClock(0); setCur(0); };
+  // "Start a new film" now KEEPS the film you were on: it stays under MY PROJECTS.
+  const newFilm = async () => { try { const mt = (await dbAll()).find(x => x.id === projectId.current + "_meta"); if (!mt && (scenes.length || narrUrl)) await dbPut(projectId.current + "_meta", new Blob([JSON.stringify({ title, kind, minutes, ratio, style, narr, script, onePrompt })], { type: "application/json" }), { title: (title || "").trim(), kind, minutes, startedAt: new Date(Number(String(projectId.current).slice(1)) || Date.now()).toISOString(), hint: String(onePrompt || narr || script || "").trim().slice(0, 60) }); } catch (e) { } projectId.current = "p" + Date.now(); save("pid", projectId.current); save("fresh", true); loadProjects(); setScenes([]); setDone(false); setNarrUrl(""); setMusicUrl(""); setExp({ busy: false, pct: 0, msg: "", files: [] }); setStage(""); setPct(0); setClock(0); setCur(0); };
 
   // ── page ──
   const Chips = ({ items, value, onPick }) => <div className="row">{items.map(x => { const id = x.id || x, lb = x.label || x; return <button key={id} className={"c" + (value === id ? " on" : "")} onClick={() => onPick(id)}>{lb}</button>; })}</div>;
@@ -1427,6 +1459,16 @@ export default function Studio() {
         {join.urls.length > 0 && <div className="row" style={{ marginTop: 8 }}>{join.urls.length === 1 ? <a className="b g" style={{ textDecoration: "none", padding: "13px 22px" }} href={join.urls[0]} download={join.fileName}>⬇ DOWNLOAD MY FILM · {join.fileName}</a> : <button className="b g" onClick={getJoined}>⬇ DOWNLOAD MY FILM · {join.fileName}</button>}</div>}
         {(exp.files.length > 0 || join.urls.length > 0 || (done && !busy && savedFilms.length > 0 && !exp.busy && !join.busy)) && (() => { const f = exp.files[0] || (savedFilms[0] && { blob: savedFilms[0].blob, name: savedFilms[0].name, url: URL.createObjectURL(savedFilms[0].blob) }); const nm = (title && title.trim()) || (f && f.name) || (join.fileName || "My film"); const go = () => { if (exp.files[0]) saveFile(exp.files[0]); else if (join.urls.length > 1) getJoined(); else if (join.urls.length === 1) { const a = document.createElement("a"); a.href = join.urls[0]; a.download = join.fileName; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1500); } else if (f) saveFile(f); }; return <div style={{ marginTop: 14, padding: 16, borderRadius: 6, background: "linear-gradient(135deg,#ffe08a,#ffb938)", color: "#000", textAlign: "center", boxShadow: "0 0 24px rgba(255,200,80,.55)" }}><div style={{ fontSize: 13, fontWeight: 800, letterSpacing: ".1em" }}>YOUR FILM IS READY</div><div style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 12px", wordBreak: "break-word" }}>{nm}</div><button onClick={go} style={{ width: "100%", padding: "16px 10px", fontSize: 18, fontWeight: 800, border: "3px solid #000", borderRadius: 6, background: "#000", color: "#ffd45e", cursor: "pointer" }}>⬇ PRESS HERE TO SAVE YOUR FILM</button></div>; })()}
         {exp.files.length > 0 && <div className="row" style={{ marginTop: 8 }}>{exp.files.map(f => <button key={f.name} className="b s" onClick={() => saveFile(f)}>⬇ {f.name}</button>)}</div>}
+
+        <div className="tl">
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".08em", color: "var(--gold)", marginBottom: 6 }}>MY PROJECTS · EVERY FILM IS KEPT · TAP OPEN TO GO BACK</div>
+          {projects.length === 0 ? <div className="msg">No projects yet. Every film you make is kept here automatically.</div> :
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{projects.map(p => <div key={p.id} className="row" style={{ alignItems: "center" }}>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 13 }}><div style={{ fontWeight: 700, wordBreak: "break-word" }}>{p.name}{projectId.current === p.id ? " · open now" : ""}</div><div style={{ opacity: .7, fontSize: 11 }}>{p.when} · {p.scenes} scene{p.scenes === 1 ? "" : "s"}{p.finals ? " · film saved" : ""}</div></div>
+              <button className="b g" style={{ padding: "9px 14px" }} onClick={() => openProject(p.id)}>Open</button>
+              <button className="c" onClick={() => deleteProject(p)}>Delete</button>
+            </div>)}</div>}
+        </div>
 
         <div className="tl">
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".08em", color: "var(--gold)", marginBottom: 6 }}>MY SAVED FILMS · TAP TO SAVE TO PHOTOS OR FILES</div>
