@@ -1376,7 +1376,7 @@ export default function Studio() {
           <span style={{ color: "var(--gold)", fontWeight: 700 }}>About {est} min to make</span>
         </div>
         <button className="go" onClick={() => { if (simple && onePrompt.trim()) { const n = splitPrompt(); if (n) setAutoMake(true); else designFromIdea(); } else makeMovie(); }} disabled={busy || designing}>{designing ? "WRITING YOUR FILM…" : busy ? "MAKING YOUR MOVIE…" : "MAKE MY MOVIE"}</button>
-        {(busy || designing) && <div aria-live="polite" style={{ position: "fixed", right: 14, bottom: 14, left: 14, zIndex: 60, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12, pointerEvents: "none" }}><div style={{ maxWidth: "min(70vw,420px)", background: "rgba(14,15,19,.92)", border: "1px solid var(--line)", borderRadius: 999, padding: "8px 16px", fontSize: 12, color: "#F3EDE2", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{(designing ? "Writing your film…" : stage || "Making your movie…") + (busy && pct ? "  " + Math.round(pct) + "%" : "")}</div><div style={{ width: 54, height: 54, flex: "none" }}>
+        {(busy || designing) && <div aria-hidden="true" style={{ position: "fixed", right: 18, bottom: 18, zIndex: 60, width: 54, height: 54, pointerEvents: "none" }}>
           <style>{"@keyframes mfsGoldTurn{to{transform:rotate(360deg)}}@keyframes mfsGoldPulse{0%,100%{opacity:.55;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}"}</style>
           <svg viewBox="0 0 54 54" width="54" height="54" style={{ filter: "drop-shadow(0 0 8px rgba(230,201,142,.55))" }}>
             <defs><linearGradient id="mfsGold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#FFF1C9" /><stop offset=".5" stopColor="#E6C98E" /><stop offset="1" stopColor="#A9812F" /></linearGradient></defs>
@@ -1385,7 +1385,7 @@ export default function Studio() {
               <circle cx="27" cy="5" r="3.2" fill="#FFF1C9" />
             </g>
             <polygon points="27,17 30,24 37,27 30,30 27,37 24,30 17,27 24,24" fill="url(#mfsGold)" style={{ transformOrigin: "27px 27px", animation: "mfsGoldPulse 1.4s ease-in-out infinite" }} />
-          </svg></div></div>}
+          </svg></div>}
         {(busy || stage) && <div className="msg">{busy && <span className="spin" aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", marginRight: 10 }} />}{stage}<div className="pb"><i style={{ width: pct + "%" }} /></div></div>}
         {err && <div className="msg err">{err}</div>}
 
