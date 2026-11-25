@@ -197,7 +197,7 @@ function parseScenes(text) {
   const t = String(text || ""); const re = /^\s*SCENE\s+(\d+)\s*[:.\-—]?\s*(.*)$/gim; const marks = []; let m;
   while ((m = re.exec(t))) marks.push({ n: Number(m[1]), at: m.index, head: m[2] || "", end: re.lastIndex });
   if (marks.length < 2) return [];
-  return marks.map((mk, k) => { const body = t.slice(mk.end, k + 1 < marks.length ? marks[k + 1].at : t.length).trim(); const txt = (mk.head + " " + body).replace(/\s+/g, " ").trim(); return txt; }).filter(Boolean);
+  return marks.map((mk, k) => { let body = t.slice(mk.end, k + 1 < marks.length ? marks[k + 1].at : t.length).trim(); if (k + 1 === marks.length) body = body.split(/\n\s*\n/)[0]; /* the last scene stops at the first empty line, so voices, footage and script notes are not read as part of it */ const txt = (mk.head + " " + body).replace(/\s+/g, " ").trim(); return txt; }).filter(Boolean);
 }
 const STOP = new Set("a an the and or of in on at to for with from by into onto over under above below beside behind between through across along around toward towards as is are was were be been being it its this that these those their his her them they he she we you your our one two each every all some any no not only just very slow slowly fast camera shot shots frame framing push pull dolly track tracking pan tilt crane static locked off wide close up close-up macro aerial lens light lit lighting grade graded warm cold cool gold golden amber blue teal orange black white sepia grain film cinematic documentary photorealistic shallow depth field bokeh soft deep heavy single continuous composed divided vertically centre center left right half halves interior exterior scene still stillness quiet gentle long held beat feels necessary hopeful serious respectful tender comic deadpan dust haze flare highlights glow glowing screen".split(" "));
 function stockQuery(text) {
@@ -330,6 +330,9 @@ export default function Studio() {
   const [duck, setDuck] = useState(() => load("duck", true));
   const [cleanVoice, setCleanVoice] = useState(() => load("cleanVoice", true));
   const [minutes, setMinutes] = useState(() => load("minutes", 5));
+  // Seconds of film per clip. Set by "Clip length: 60 sec" (or "60 seconds per clip") in the prompt.
+  const [clipSecs, setClipSecs] = useState(() => Number(load("clipsecs", SHOT_SECS)) || SHOT_SECS);
+  useEffect(() => { save("clipsecs", clipSecs); }, [clipSecs]);
   const [ratio, setRatio] = useState(() => load("ratio", "16:9"));
   const [quality, setQuality] = useState(() => load("quality", "1080p"));
   const [vVol, setVVol] = useState(() => load("vVol", 1));
@@ -528,7 +531,7 @@ export default function Studio() {
 
   async function voiceIt(text, lang) {
     let t = text; if (lang && lang !== "English") t = await translateText(text, lang);
-    const cast = msParseCast(t); let parts = []; let lostLines = 0;
+    const cast = msParseCast(t); let parts = []; let lostLines = 0; const segs = [];
     if ((charVoices || charRecs.length) && cast.speakers.length >= 2) {
       const cmap = msCastVoices(cast.speakers, narrator, t);
       const umap = charVoiceMap(cast.speakers); const uid = {};
@@ -549,13 +552,44 @@ export default function Studio() {
         setStage("Voicing " + (sg.sp ? (cast.speakers.find(x => x.key === sg.sp) || {}).label : "narrator") + " — " + (i + 1) + " of " + cast.segments.length);
         const meta = (sg.sp && uid[sg.sp]) ? { voice: uid[sg.sp], speed: Number(speed) || 1 } : vc ? { voice: vc.engineVoice || vc.id, gender: vc.gender || "", origin: vc.origin || "", speed: Number(speed) || 1 } : voiceMeta(narrator);
         const r = await msVoiceText(sg.text, { ...meta, language: lang && lang !== "English" ? lang : "" }); parts.push(...r.parts); if (r.failed) lostLines += r.failed;
+        segs.push({ text: sg.text, blob: r.parts.length ? new Blob(r.parts, { type: r.parts[0].type || "audio/mpeg" }) : null });
       }
     } else {
       const r = await msVoiceText(t, { ...voiceMeta(narrator), language: lang && lang !== "English" ? lang : "" }, (i, n) => setStage("MandaStrong Engine — voicing part " + i + " of " + n + (lang && lang !== "English" ? " (" + lang + ")" : ""))); parts = r.parts;
     }
     if (!parts.length) throw new Error("The voice engine returned no audio");
     if (lostLines) setErr(lostLines + " spoken line" + (lostLines > 1 ? "s" : "") + " could not be voiced and will be silent. Press Re-voice my film to try again.");
-    return { blob: new Blob(parts, { type: parts[0].type || "audio/mpeg" }), text: t };
+    return { blob: new Blob(parts, { type: parts[0].type || "audio/mpeg" }), text: t, segs };
+  }
+  // IN SYNC: every spoken line is placed inside its own scene's time, so the right picture is on screen when it is said.
+  // The film keeps its full length; between lines the music plays.
+  async function syncedTrack(segs, plan) {
+    const SR = 16000; const good = segs.filter(x => x.blob); if (!good.length || !plan || !plan.nShots) return null;
+    setStage("Putting every line in its scene…");
+    const bufs = [];
+    for (const sg of segs) { let d = null; if (sg.blob) { try { const oc = new OfflineAudioContext(1, SR, SR); const b = await oc.decodeAudioData(await sg.blob.arrayBuffer()); const a = new Float32Array(b.length); for (let c = 0; c < b.numberOfChannels; c++) { const ch = b.getChannelData(c); for (let i = 0; i < a.length; i++) a[i] += ch[i] / b.numberOfChannels; } d = a; } catch (e) { } } bufs.push(d); }
+    const sc = plan.scenes || []; let assign = null;
+    if (sc.length > 1) {
+      try {
+        const ask = "Here are the scenes of a film, in order:\n" + sc.map((x, i) => (i + 1) + ". " + x).join("\n") + "\n\nHere are the film's spoken lines, in story order:\n" + segs.map((x, i) => (i + 1) + ". " + String(x.text).slice(0, 160)).join("\n") + "\n\nFor each spoken line, give the number of the scene it is spoken in. Lines are in story order, so the scene numbers never go down. Return ONLY a JSON array of " + segs.length + " numbers.";
+        const d = await proxyFetch({ model: "claude-sonnet-4-20250514", max_tokens: 4000, messages: [{ role: "user", content: ask }] });
+        const raw = (d && d.content ? d.content.filter(x => x.type === "text").map(x => x.text).join("") : "");
+        const arr = JSON.parse(raw.slice(raw.indexOf("["), raw.lastIndexOf("]") + 1));
+        if (Array.isArray(arr) && arr.length === segs.length) assign = arr.map(n => Math.max(0, Math.min(sc.length - 1, (Number(n) || 1) - 1)));
+      } catch (e) { }
+    }
+    if (!assign) assign = segs.map((_, i) => Math.floor(i * Math.max(1, sc.length) / segs.length));
+    for (let i = 1; i < assign.length; i++) if (assign[i] < assign[i - 1]) assign[i] = assign[i - 1];
+    const shotLen = plan.total / plan.nShots; const first = plan.first || [];
+    const start = k => (first[k] != null ? first[k] : Math.round(k * plan.nShots / Math.max(1, sc.length))) * shotLen;
+    const at = []; let cur = 0;
+    for (let i = 0; i < segs.length; i++) { const t0 = Math.max(cur, (i === 0 || assign[i] !== assign[i - 1]) ? start(assign[i]) + 0.8 : cur); at.push(t0); cur = t0 + (bufs[i] ? bufs[i].length / SR : 0) + 0.6; }
+    const total = Math.max(plan.total, cur + 1); const n = Math.ceil(total * SR);
+    const pcm = new Int16Array(n);
+    for (let i = 0; i < segs.length; i++) { const b = bufs[i]; if (!b) continue; const o = Math.floor(at[i] * SR); for (let j = 0; j < b.length && o + j < n; j++) { const v = Math.max(-1, Math.min(1, b[j])); pcm[o + j] = v < 0 ? v * 32768 : v * 32767; } }
+    const hd = new DataView(new ArrayBuffer(44)); const w = (p, x) => { for (let i = 0; i < x.length; i++) hd.setUint8(p + i, x.charCodeAt(i)); };
+    w(0, "RIFF"); hd.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt "); hd.setUint32(16, 16, true); hd.setUint16(20, 1, true); hd.setUint16(22, 1, true); hd.setUint32(24, SR, true); hd.setUint32(28, SR * 2, true); hd.setUint16(32, 2, true); hd.setUint16(34, 16, true); w(36, "data"); hd.setUint32(40, n * 2, true);
+    return { blob: new Blob([hd.buffer, pcm.buffer], { type: "audio/wav" }), secs: total };
   }
 
   // Turns a picture (your photo or a stock photo) into a moving shot.
@@ -677,17 +711,30 @@ export default function Studio() {
   useEffect(() => { (async () => { try { const all = await dbAll(); const x = all.find(y => y.id === "mfs_oneprompt" && y.blob); if (x) { const tx = await x.blob.text(); setOnePrompt(p => p || fixEnc(tx)); } } catch (e) { } promptLoaded.current = true; })(); }, []);
   useEffect(() => { if (!promptLoaded.current) return; const t = setTimeout(() => dbPut("mfs_oneprompt", new Blob([onePrompt || ""], { type: "text/plain" }), {}), 400); return () => clearTimeout(t); }, [onePrompt]);
   function splitPrompt() {
-    const sp = [], dr = [], vo = [], opt = {}; let t = "", len = 0;
+    const sp = [], dr = [], vo = [], opt = {}; let t = "", len = 0, clip = 0;
     fixEnc(String(onePrompt || "")).split(/\r?\n/).forEach(raw => {
       const l = raw.trim(); if (!l) { if (dr.length && dr[dr.length - 1] !== "") dr.push(""); return; }
       let m;
       if ((m = l.match(/^title\s*:\s*(.+)/i))) t = m[1].trim();
       else if ((m = l.match(/^(?:length|runtime|duration)\s*:\s*(\d+)\s*(hr|hour|h|min|m)?/i))) { const n = Number(m[1]); len = /^h/i.test(m[2] || "") ? n * 60 : n; }
+      else if ((m = l.match(/^(?:clip length|clip|clips|shot length|seconds per clip)\s*:\s*(\d+)\s*(s|sec|secs|seconds?|m|min|mins|minutes?)?/i))) { const n = Number(m[1]); clip = /^m/i.test(m[2] || "") ? n * 60 : n; }
       else if (/^\[[^\]]+\]/.test(l)) sp.push(l);
       else if ((m = l.match(/^(genre|audience|animation|camera|pace|place|grade|mood|tempo|ratio|quality|music style)\s*:\s*(.+)$/i))) opt[m[1].toLowerCase()] = m[2].trim();
       else dr.push(l);
     });
     if (t) setTitle(t);
+    // Plain words in the prompt fill the settings too, when there is no "Setting:" line for them.
+    { const prose = dr.join(" ");
+      const findIn = (items) => { for (const i of items) { const w = String(i).split(/[\/(]/)[0].trim(); if (w.length > 2 && new RegExp("\\b" + w.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&") + "\\b", "i").test(prose)) return i; } return ""; };
+      const fill = (k, items) => { if (!opt[k]) { const v = findIn(items); if (v) opt[k] = v; } };
+      fill("genre", GENRES); fill("audience", AUDIENCES); fill("animation", TOONS); fill("camera", CAMERAS); fill("pace", PACES); fill("music style", MUSIC_GENRES);
+      if (!opt.mood) { const md = MOODS.find(md => new RegExp("\\b" + md.label + "\\b", "i").test(prose)); if (md) opt.mood = md.label; }
+      if (!opt.ratio) { const r = prose.match(/\b(16:9|9:16|1:1|4:3|21:9)\b/); if (r) opt.ratio = r[1]; }
+      if (!opt.quality) { const q = prose.match(/\b(720p|1080p)\b/i); if (q) opt.quality = q[1]; }
+      if (!len) { const lm = prose.match(/\b(\d+(?:\.\d+)?)\s*[- ]?(hours?|hrs?|minutes?|mins?)\b(?!\s*(?:per|each|a)\s*clip)/i); if (lm) len = Math.round(Number(lm[1]) * (/^h/i.test(lm[2]) ? 60 : 1)); }
+      if (!clip) { const cm = prose.match(/\b(\d+)\s*[- ]?(seconds?|secs?|minutes?|mins?)\s*(?:per|each|a)\s*(?:clip|shot|scene)\b/i) || prose.match(/\b(\d+)\s*[- ]?(second|sec|minute|min)\s+(?:clips?|shots?)\b/i); if (cm) clip = Number(cm[1]) * (/^m/i.test(cm[2]) ? 60 : 1); }
+    }
+    if (clip >= 2) setClipSecs(Math.min(600, clip));
     // SETTINGS lines in the prompt choose the Advanced options (the closest listed choice wins).
     const pick = (items, v) => { const x = String(v || "").toLowerCase().replace(/[^a-z0-9]/g, ""); if (!x) return ""; return items.find(i => String(i).toLowerCase().replace(/[^a-z0-9]/g, "") === x) || items.find(i => { const y = String(i).toLowerCase().replace(/[^a-z0-9]/g, ""); return y.includes(x) || x.includes(y); }) || ""; };
     { let v;
@@ -721,7 +768,10 @@ export default function Studio() {
     setErr(""); setBusy(true); setRvMsg("Making your voices…");
     try {
       const v = await voiceIt(narr.trim(), spoken);
-      const secs = await msBlobSeconds(v.blob);
+      try { const all = await dbAll(); const sp = all.find(x => x.id === projectId.current + "_sync"); let plan = sp && sp.blob ? JSON.parse(await sp.blob.text()) : null;
+        if (!plan && scenes.length) plan = { scenes: scenes.map(x => String(x.text || "").slice(0, 400)), first: scenes.map((_, i) => i), nShots: scenes.length, total: Math.max(minutes * 60, 1) };
+        const st = plan ? await syncedTrack(v.segs || [], plan) : null; if (st) v.blob = st.blob; } catch (e) { }
+      const secs = (v.blob.type === "audio/wav" ? await audioSecs(v.blob) : 0) || await msBlobSeconds(v.blob);
       await dbPut(projectId.current + "_narr", v.blob, { text: v.text, secs });
       setNarrUrl(URL.createObjectURL(v.blob)); setNarrText(v.text); setNarrSecs(secs); setVoiceMode("engine");
       const ext = (v.blob.type || "").includes("wav") ? "wav" : "mp3";
@@ -838,10 +888,17 @@ export default function Studio() {
       if (!parseScenes(script).length) { while (list.length < n) list.push(list[list.length % Math.max(1, list.length)]); list = list.slice(0, n); }
       // Cut each scene into different shots (new angle each time), one per 10 s of film, so a clip never has to repeat to fill time.
       shotMap.current = null;
-      { const origN = list.length, want = Math.min(SHOT_CAP, Math.ceil(minutes * 60 / SHOT_SECS));
-        if (origN && want > origN) { const per = Math.ceil(want / origN), ex = [], first = [];
-          list.forEach(tx => { first.push(ex.length); for (let k = 0; k < per; k++) ex.push(k ? tx + "\nThe same scene, a different shot: " + ANGLES[(k - 1) % ANGLES.length] + ". Same characters, same place, same look as the shot before. Continue the story of this scene." : tx); });
+      const origList = list.slice();
+      { const origN = list.length, want = Math.min(SHOT_CAP, Math.ceil(minutes * 60 / (clipSecs || SHOT_SECS)));
+        if (origN && want > origN) {
+          // Each scene gets shots in proportion to its own time, e.g. SCENE 5 (13:00-20:00) gets 7 minutes of shots.
+          const tm = list.map(tx => { const r = /\((\d+):(\d{2})\s*[-–—]\s*(\d+):(\d{2})\)/.exec(tx); return r ? Math.max(1, (Number(r[3]) * 60 + Number(r[4])) - (Number(r[1]) * 60 + Number(r[2]))) : 0; });
+          const w = tm.every(x => x > 0) ? tm : list.map(() => 1); const sw = w.reduce((a, b) => a + b, 0);
+          const ex = [], first = [];
+          list.forEach((tx, i) => { first.push(ex.length); const per = Math.max(1, Math.round(want * w[i] / sw)); for (let k = 0; k < per; k++) ex.push(k ? tx + "\nThe same scene, a different shot: " + ANGLES[(k - 1) % ANGLES.length] + ". Same characters, same place, same look as the shot before. Continue the story of this scene." : tx); });
           shotMap.current = { first, origN }; list = ex; setStage("Cutting your " + origN + " scenes into " + ex.length + " shots, so nothing repeats…"); } }
+      const syncPlan = { scenes: origList.map(x => String(x).slice(0, 400)), first: shotMap.current ? shotMap.current.first : origList.map((_, i) => i), nShots: list.length, total: Math.max(minutes * 60, 1) };
+      try { await dbPut(projectId.current + "_sync", new Blob([JSON.stringify(syncPlan)], { type: "application/json" }), {}); } catch (e) { }
       setScenes(list.map(t => ({ text: t, status: "waiting" }))); setPct(6);
 
       // 2 — narration (yours or the engine), translated if asked
@@ -852,7 +909,7 @@ export default function Studio() {
       if (clipVoices) setStage("Using the voices in your clips.");
       if (voiceMode === "mine" && myRec) { nUrl = myRec.url; nText = spokenText; nSecs = (await audioSecs(myRec.blob)) || (await msBlobSeconds(myRec.blob)); await dbPut(projectId.current + "_narr", myRec.blob, { text: nText, secs: nSecs }); if (tail) nSecs += tail.secs; }
       else if (spokenText) {
-        try { const v = await voiceIt(spokenText, spoken); nUrl = URL.createObjectURL(v.blob); nText = v.text; nSecs = await msBlobSeconds(v.blob); await dbPut(projectId.current + "_narr", v.blob, { text: nText, secs: nSecs }); if (lipSync) firstVoice = await readAsDataURL(v.blob.slice(0, 600000, v.blob.type)); }
+        try { const v = await voiceIt(spokenText, spoken); try { const st = await syncedTrack(v.segs || [], syncPlan); if (st) v.blob = st.blob; } catch (e) { } nUrl = URL.createObjectURL(v.blob); nText = v.text; nSecs = (v.blob.type === "audio/wav" ? await audioSecs(v.blob) : 0) || await msBlobSeconds(v.blob); await dbPut(projectId.current + "_narr", v.blob, { text: nText, secs: nSecs }); if (lipSync) firstVoice = await readAsDataURL(v.blob.slice(0, 600000, v.blob.type)); }
         catch (e) {
           if (e && e.stopFilm) throw e;
           if (myRec) { nUrl = myRec.url; nText = spokenText; nSecs = (await audioSecs(myRec.blob)) || (await msBlobSeconds(myRec.blob)); await dbPut(projectId.current + "_narr", myRec.blob, { text: nText, secs: nSecs }); if (tail) nSecs += tail.secs; setStage("Engine has no credit. Using your own recording as the voice."); }
@@ -1254,7 +1311,7 @@ export default function Studio() {
           <p>Describe your film. The engine makes it.</p>
         </div>}
         {!simple && <div className="lab">ONE PROMPT — PUT EVERYTHING IN ONE BOX</div>}
-        <textarea className="ta op" value={onePrompt} onChange={e => setOnePrompt(fixEnc(e.target.value))} placeholder={simple ? "Describe your film in as much detail as you like: the story, the characters, the look, the length.\n\nOr paste your full script with each speaker's name in [BRACKETS]." : "Title: Santa's List: The Book of Names\nLength: 60 min\n[SANTA] Ho ho ho!\n[LILY] I made a list!\nEverything else (directions, description, voices) goes on its own lines."} />
+        <textarea className="ta op" value={onePrompt} onChange={e => setOnePrompt(fixEnc(e.target.value))} placeholder={simple ? "Paste your prompt, script and voices here.\n\nPROMPT: describe your film: story, look, camera, light, weather, sound, length and clip length (e.g. 60 min, 60 seconds per clip).\nSCRIPT: every spoken line with the speaker in [BRACKETS].\nVOICES: who uses which voice, e.g. DOXY'S VOICE: Santa, Max.\n\nThe settings fill themselves in from your words." : "Title: Santa's List: The Book of Names\nLength: 60 min\n[SANTA] Ho ho ho!\n[LILY] I made a list!\nEverything else (directions, description, voices) goes on its own lines."} />
         <button className="go" style={{ marginTop: 10, display: simple ? "none" : undefined }} onClick={() => { const n = splitPrompt(); if (n) setAutoMake(true); else designFromIdea(); }}>SPLIT AND MAKE MY MOVIE</button>
         {simple && <div className="len">
           <div className="lenTop"><span>FILM LENGTH</span><b>{minutes >= 60 ? Math.floor(minutes / 60) + " hr" + (minutes % 60 ? " " + (minutes % 60) + " min" : "") : minutes + " min"}</b></div>
@@ -1422,7 +1479,7 @@ export default function Studio() {
         </div>
 
         <div style={{ marginTop: 18, border: "1px solid var(--line)", borderRadius: 3, padding: 12, display: simple ? "none" : "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontSize: 13 }}>
-          <span>Before you start: {minutes} min · {Math.max(sceneCount, clips.length)} scenes · up to {Math.max(sceneCount, clips.length, Math.min(SHOT_CAP, Math.ceil(minutes * 60 / SHOT_SECS)))} shots (one new shot every {SHOT_SECS} seconds; your own clips count too) · {Math.max(1, castNames)} voice{castNames > 1 ? "s" : ""} · {langCount} language{langCount > 1 ? "s" : ""}</span>
+          <span>Before you start: {minutes} min · {Math.max(sceneCount, clips.length)} scenes · up to {Math.max(sceneCount, clips.length, Math.min(SHOT_CAP, Math.ceil(minutes * 60 / (clipSecs || SHOT_SECS))))} shots (one new shot every {clipSecs || SHOT_SECS} seconds; your own clips count too) · {Math.max(1, castNames)} voice{castNames > 1 ? "s" : ""} · {langCount} language{langCount > 1 ? "s" : ""}</span>
           <span style={{ color: "var(--gold)", fontWeight: 700 }}>About {est} min to make</span>
         </div>
         <button className="go" onClick={() => { if (simple && onePrompt.trim()) { const n = splitPrompt(); if (n) setAutoMake(true); else designFromIdea(); } else makeMovie(); }} disabled={busy || designing}>{designing ? "WRITING YOUR FILM…" : busy ? "MAKING YOUR MOVIE…" : "MAKE MY MOVIE"}</button>
