@@ -1161,12 +1161,24 @@ export default function Studio() {
   };
   // A film that came back in pieces is put back together on this device, then saved.
   const getJoined = async () => {
-    if (join.urls.length === 1) return;
     try { setJoin(j => ({ ...j, msg: "Downloading your film…" })); const parts = []; for (const u of join.urls) parts.push(await (await fetch(u)).blob()); const blob = new Blob(parts, { type: "video/mp4" }); await saveFile({ blob, name: join.fileName, url: URL.createObjectURL(blob) }); setJoin(j => ({ ...j, msg: "Your film is ready." })); } catch (e) { setJoin(j => ({ ...j, msg: "Download failed — try again." })); }
   };
+  // Every download asks for a file name, then lets the user choose where to save it.
+  const [pendingSave, setPendingSave] = useState(null);
+  const shareOrDownload = async (file, url) => {
+    try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: file.name }); return true; } } catch (e) { if (e && e.name === "AbortError") return true; if (e && e.name === "NotAllowedError") { setPendingSave({ file, url }); return true; } }
+    const a = document.createElement("a"); a.href = url || URL.createObjectURL(file); a.download = file.name; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1500); return true;
+  };
   const saveFile = async (f, toPhotos) => {
-    try { const file = new File([f.blob], f.name, { type: f.blob.type }); if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: f.name }); return; } } catch (e) { if (e && e.name === "AbortError") return; }
-    const a = document.createElement("a"); a.href = f.url; a.download = f.name; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1500);
+    const m = /\.[a-z0-9]{2,5}$/i.exec(f.name || ""); const ext = m ? m[0] : "";
+    let nm = window.prompt("Name your file:", (f.name || "My_Film").replace(/\.[a-z0-9]{2,5}$/i, ""));
+    if (nm === null) return;
+    nm = (nm.trim() || "My_Film").replace(/[\\/:*?"<>|]/g, "_"); if (ext && !nm.toLowerCase().endsWith(ext.toLowerCase())) nm += ext;
+    if (window.showSaveFilePicker) {
+      try { const h = await window.showSaveFilePicker({ suggestedName: nm }); const w = await h.createWritable(); await w.write(f.blob); await w.close(); return; } catch (e) { if (e && e.name === "AbortError") return; }
+    }
+    const file = new File([f.blob], nm, { type: f.blob.type || "application/octet-stream" });
+    await shareOrDownload(file, f.url);
   };
   const shareFilm = async () => { const f = exp.files[0]; if (f) return saveFile(f); try { await navigator.share({ title: title || "My film", text: "Made with Mandas 1 Shot Film Studio", url: location.origin }); } catch (e) { } };
   const poster = async () => {
@@ -1462,8 +1474,8 @@ export default function Studio() {
         {(exp.busy || exp.msg) && <div className="msg">{exp.busy && <div className="livebox"><canvas ref={pvRef} /><span className="livetag">● LIVE</span></div>}<div className="prow">{exp.busy && <span className="spin" aria-hidden="true" />}<span>{exp.msg}</span></div><div className="pb"><i style={{ width: exp.pct + "%" }} /></div></div>}
         {packMsg && <div className="msg">{packMsg}</div>}
         {(join.busy || join.msg) && <div className="msg">{join.msg}<div className="pb"><i style={{ width: join.pct + "%" }} /></div></div>}
-        {join.urls.length > 0 && <div className="row" style={{ marginTop: 8 }}>{join.urls.length === 1 ? <a className="b g" style={{ textDecoration: "none", padding: "13px 22px" }} href={join.urls[0]} download={join.fileName}>⬇ DOWNLOAD MY FILM · {join.fileName}</a> : <button className="b g" onClick={getJoined}>⬇ DOWNLOAD MY FILM · {join.fileName}</button>}</div>}
-        {(exp.files.length > 0 || join.urls.length > 0 || (done && !busy && savedFilms.length > 0 && !exp.busy && !join.busy)) && (() => { const f = exp.files[0] || (savedFilms[0] && { blob: savedFilms[0].blob, name: savedFilms[0].name, url: URL.createObjectURL(savedFilms[0].blob) }); const nm = (title && title.trim()) || (f && f.name) || (join.fileName || "My film"); const go = () => { if (exp.files[0]) saveFile(exp.files[0]); else if (join.urls.length > 1) getJoined(); else if (join.urls.length === 1) { const a = document.createElement("a"); a.href = join.urls[0]; a.download = join.fileName; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1500); } else if (f) saveFile(f); }; return <div style={{ marginTop: 14, padding: 16, borderRadius: 6, background: "linear-gradient(135deg,#ffe08a,#ffb938)", color: "#000", textAlign: "center", boxShadow: "0 0 24px rgba(255,200,80,.55)" }}><div style={{ fontSize: 13, fontWeight: 800, letterSpacing: ".1em" }}>YOUR FILM IS READY</div><div style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 12px", wordBreak: "break-word" }}>{nm}</div><button onClick={go} style={{ width: "100%", padding: "16px 10px", fontSize: 18, fontWeight: 800, border: "3px solid #000", borderRadius: 6, background: "#000", color: "#ffd45e", cursor: "pointer" }}>⬇ PRESS HERE TO SAVE YOUR FILM</button></div>; })()}
+        {join.urls.length > 0 && <div className="row" style={{ marginTop: 8 }}><button className="b g" onClick={getJoined}>⬇ DOWNLOAD MY FILM · {join.fileName}</button></div>}
+        {(exp.files.length > 0 || join.urls.length > 0 || (done && !busy && savedFilms.length > 0 && !exp.busy && !join.busy)) && (() => { const f = exp.files[0] || (savedFilms[0] && { blob: savedFilms[0].blob, name: savedFilms[0].name, url: URL.createObjectURL(savedFilms[0].blob) }); const nm = (title && title.trim()) || (f && f.name) || (join.fileName || "My film"); const go = () => { if (exp.files[0]) saveFile(exp.files[0]); else if (join.urls.length > 0) getJoined(); else if (f) saveFile(f); }; return <div style={{ marginTop: 14, padding: 16, borderRadius: 6, background: "linear-gradient(135deg,#ffe08a,#ffb938)", color: "#000", textAlign: "center", boxShadow: "0 0 24px rgba(255,200,80,.55)" }}><div style={{ fontSize: 13, fontWeight: 800, letterSpacing: ".1em" }}>YOUR FILM IS READY</div><div style={{ fontSize: 22, fontWeight: 800, margin: "6px 0 12px", wordBreak: "break-word" }}>{nm}</div><button onClick={go} style={{ width: "100%", padding: "16px 10px", fontSize: 18, fontWeight: 800, border: "3px solid #000", borderRadius: 6, background: "#000", color: "#ffd45e", cursor: "pointer" }}>⬇ PRESS HERE TO SAVE YOUR FILM</button></div>; })()}
         {exp.files.length > 0 && <div className="row" style={{ marginTop: 8 }}>{exp.files.map(f => <button key={f.name} className="b s" onClick={() => saveFile(f)}>⬇ {f.name}</button>)}</div>}
 
         <div className="tl">
@@ -1500,6 +1512,7 @@ export default function Studio() {
             </div>)}</div>}
         </div>
         </div>
+        {pendingSave && <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}><div style={{ background: "#111", border: "1px solid #c9a64a", borderRadius: 8, padding: 20, maxWidth: 420, width: "100%", textAlign: "center" }}><div style={{ color: "#f3e6c0", fontWeight: 700, marginBottom: 6 }}>{pendingSave.file.name}</div><div style={{ color: "#bba", fontSize: 13, marginBottom: 14 }}>Your file is ready. Tap Save, then choose where to keep it.</div><button className="b g" style={{ width: "100%" }} onClick={async () => { const p = pendingSave; setPendingSave(null); try { await navigator.share({ files: [p.file], title: p.file.name }); } catch (e) { if (!(e && e.name === "AbortError")) { const a = document.createElement("a"); a.href = p.url || URL.createObjectURL(p.file); a.download = p.file.name; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1500); } } }}>SAVE</button><button className="b s" style={{ width: "100%", marginTop: 8 }} onClick={() => setPendingSave(null)}>Cancel</button></div></div>}
         <div className="ft">{simple ? "Powered by the MandaStrong Engine" : "Mandas 1 Shot Film Studio · Powered by the MandaStrong Engine"}</div>
       </div>
     </div>
