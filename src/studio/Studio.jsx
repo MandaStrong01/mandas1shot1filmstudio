@@ -937,6 +937,14 @@ export default function Studio() {
   const [savedFilms, setSavedFilms] = useState([]);
   const loadSaved = async () => { const all = await dbAll(); setSavedFilms(all.filter(x => String(x.id).includes("_final_") && x.blob).sort((a, b) => String(b.id).localeCompare(String(a.id))).map(x => ({ id: x.id, name: (x.meta && x.meta.name) || "My film", blob: x.blob }))); };
   useEffect(() => { loadSaved(); }, []);
+  // Load a finished film file (from Files or Photos) into this app: it appears under MY SAVED FILMS and MY PROJECTS.
+  const importFilm = async (fl) => {
+    const f = fl && fl[0]; if (!f) return;
+    const pid = "p" + Date.now(); const nm = f.name.replace(/\.[^.]+$/, "") || "My film";
+    await dbPut(pid + "_final_import", f, { name: f.name });
+    await dbPut(pid + "_meta", new Blob([JSON.stringify({ title: nm })], { type: "application/json" }), { title: nm, startedAt: Date.now() });
+    await loadSaved(); await loadProjects(); setErr("");
+  };
   const deleteSaved = async (id) => { try { const db = await idb(); const tx = db.transaction("f", "readwrite"); tx.objectStore("f").delete(id); await new Promise(res => { tx.oncomplete = res; tx.onerror = res; }); } catch (e) { } loadSaved(); };
   // MY PROJECTS: every film ever started on this device, newest first. Open one to carry on; nothing is lost by starting a new film.
   const [projects, setProjects] = useState([]);
@@ -1470,6 +1478,7 @@ export default function Studio() {
 
         <div className="tl">
           <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".08em", color: "var(--gold)", marginBottom: 6 }}>MY SAVED FILMS · TAP TO SAVE TO PHOTOS OR FILES</div>
+          <label className="b s" style={{ display: "inline-block", marginBottom: 8, cursor: "pointer" }}>Load a film from my device<input type="file" accept="video/*,.mp4,.webm,.mov" style={{ display: "none" }} onChange={e => { importFilm(e.target.files); e.target.value = ""; }} /></label>
           {savedFilms.length === 0 ? <div className="msg">No film saved yet. When your film is ready, a bright gold box appears above with its name and a button to press.</div> :
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>{savedFilms.map(f => <div key={f.id} className="row" style={{ alignItems: "center" }}>
               <button className="b g" style={{ padding: "9px 14px", textAlign: "left", flex: 1 }} onClick={() => saveFile({ blob: f.blob, name: f.name, url: URL.createObjectURL(f.blob) })}>⬇ {f.name} · {Math.round(f.blob.size / 1048576)} MB</button>
