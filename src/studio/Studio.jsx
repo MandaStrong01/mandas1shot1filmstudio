@@ -1,6 +1,6 @@
 // @ts-nocheck
 // ═══════════════════════════════════════════════════════════════════
-// MANDAS 1 SHOT FILM STUDIO — one shot, one page, everything in, everything out.
+// THE 1 SHOT FILM STUDIO — one shot, one page, everything in, everything out.
 // A separate app inside the MandaStrong Studio project. It does not touch the
 // 25-page app. Powered by the MandaStrong Engine.
 // ═══════════════════════════════════════════════════════════════════
@@ -1070,7 +1070,7 @@ export default function Studio() {
       ctx.fillStyle = tint; ctx.fillRect(0, 0, W, H);
       if (subs && !opts.trailer) { const c = caps.find(x => tSec >= x.start && tSec < x.end); if (c) { ctx.font = "600 " + Math.round(H * 0.036) + "px Inter, sans-serif"; ctx.textAlign = "center"; const lines = wrapText(ctx, c.text, W * 0.86); lines.forEach((ln, k) => { const y = H * 0.92 - (lines.length - 1 - k) * H * 0.048; ctx.lineWidth = 5; ctx.strokeStyle = "rgba(0,0,0,.8)"; ctx.strokeText(ln, W / 2, y); ctx.fillStyle = "#fff"; ctx.fillText(ln, W / 2, y); }); } }
       if (logoImg) { const lw = W * 0.1, lh = lw * logoImg.height / logoImg.width; ctx.globalAlpha = 0.8; ctx.drawImage(logoImg, W - lw - W * 0.03, H * 0.03, lw, lh); ctx.globalAlpha = 1; }
-      if (watermark && plan === "starter") { ctx.font = Math.round(H * 0.03) + "px Inter"; ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.textAlign = "left"; ctx.fillText("Mandas 1 Shot Film Studio", W * 0.03, H * 0.96); }
+      if (watermark && plan === "starter") { ctx.font = Math.round(H * 0.03) + "px Inter"; ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.textAlign = "left"; ctx.fillText("The 1 Shot Film Studio", W * 0.03, H * 0.96); }
       showPv();
     };
     const card = (lines, big) => { ctx.fillStyle = "#0E0F12"; ctx.fillRect(0, 0, W, H); ctx.textAlign = "center"; ctx.fillStyle = "#E6C98E"; ctx.font = Math.round(H * (big ? 0.11 : 0.06)) + "px Inter, sans-serif"; ctx.fillText(lines[0] || "", W / 2, H * 0.42); ctx.fillStyle = "#F3EDE2"; ctx.font = Math.round(H * 0.032) + "px Inter, sans-serif"; lines.slice(1).forEach((l, k) => ctx.fillText(l, W / 2, H * 0.55 + k * H * 0.05)); showPv(); };
@@ -1104,7 +1104,7 @@ export default function Studio() {
       if (endEl) try { endEl.play(); } catch (e) { }
       const names = creditNames.split("\n").map(s => s.trim()).filter(Boolean);
       const cEnd = Date.now() + Math.max(6000, names.length * 1500 + 4000);
-      while (Date.now() < cEnd && !stopExp.current) { card([title || "The End", ...names.slice(0, 8), "Made with Mandas 1 Shot Film Studio"]); await sleep(33); }
+      while (Date.now() < cEnd && !stopExp.current) { card([title || "The End", ...names.slice(0, 8), "Made with The 1 Shot Film Studio"]); await sleep(33); }
     }
     if (opts.trailer && title) { const e2 = Date.now() + 2500; while (Date.now() < e2) { card([title, "Coming soon"], true); await sleep(33); } }
     try { nEl && nEl.pause(); tEl && tEl.pause(); endEl && endEl.pause(); bed && bed.stop(); } catch (e) { }
@@ -1237,7 +1237,7 @@ export default function Studio() {
     const file = new File([f.blob], nm, { type: f.blob.type || "application/octet-stream" });
     await shareOrDownload(file, f.url);
   };
-  const shareFilm = async () => { const f = exp.files[0]; if (f) return saveFile(f); try { await navigator.share({ title: title || "My film", text: "Made with Mandas 1 Shot Film Studio", url: location.origin }); } catch (e) { } };
+  const shareFilm = async () => { const f = exp.files[0]; if (f) return saveFile(f); try { await navigator.share({ title: title || "My film", text: "Made with The 1 Shot Film Studio", url: location.origin }); } catch (e) { } };
   const poster = async () => {
     const s = ready[Math.floor(ready.length / 2)]; if (!s) return;
     const [W, H] = sizeFor(ratio === "16:9" ? "9:16" : ratio, "1080p"); const cv = document.createElement("canvas"); cv.width = W; cv.height = H; const ctx = cv.getContext("2d");
@@ -1246,7 +1246,7 @@ export default function Studio() {
     const vw = v.videoWidth || W, vh = v.videoHeight || H, sc = Math.max(W / vw, H / vh); try { ctx.drawImage(v, (W - vw * sc) / 2, (H - vh * sc) / 2, vw * sc, vh * sc); } catch (e) { }
     const g = ctx.createLinearGradient(0, H * 0.5, 0, H); g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,.92)"); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     ctx.textAlign = "center"; ctx.fillStyle = "#E6C98E"; ctx.font = Math.round(W * 0.12) + "px Inter, sans-serif"; ctx.fillText(title || "My Film", W / 2, H * 0.84);
-    ctx.fillStyle = "#F3EDE2"; ctx.font = Math.round(W * 0.028) + "px Inter, sans-serif"; ctx.fillText(kind.toUpperCase() + " · MANDAS 1 SHOT FILM STUDIO", W / 2, H * 0.9);
+    ctx.fillStyle = "#F3EDE2"; ctx.font = Math.round(W * 0.028) + "px Inter, sans-serif"; ctx.fillText(kind.toUpperCase() + " · THE 1 SHOT FILM STUDIO", W / 2, H * 0.9);
     const blob = await new Promise(res => cv.toBlob(res, "image/png")); await saveFile({ blob, name: (title || "My_Film").replace(/[^\w]+/g, "_") + "_Poster.png", url: URL.createObjectURL(blob) });
   };
   const saveProject = async () => {
@@ -1271,7 +1271,7 @@ export default function Studio() {
       <div className="mfs">
         {simple && <div>
           <div className="mini">
-            <div className="wm">Mandas 1 Shot Film Studio</div>
+            <div className="wm">The 1 Shot Film Studio</div>
             <div className="mr">{user ? <><span style={{ opacity: .7 }}>{user.email}</span><button className="lk" onClick={logOut}>Log out</button></> : <button className="lk" onClick={() => setShowLogin(v => !v)}>Log in</button>}<button className="lk" onClick={() => { const em = (user && user.email) || email; window.open(TOPUP_LINK + (em ? "?prefilled_email=" + encodeURIComponent(em) : ""), "_blank", "noopener"); }}>Buy extra usage</button><button className="sub" onClick={() => { const em = (user && user.email) || email; window.open(SUB_LINK + (em ? "?prefilled_email=" + encodeURIComponent(em) : ""), "_blank", "noopener"); }}>Subscribe · $50/month</button></div>
           </div>
           {!user && showLogin && <div style={{ marginTop: 8 }}><div className="login">
@@ -1283,7 +1283,7 @@ export default function Studio() {
         </div>}
         {!simple && <div>
         <div className="top">
-          <div><div className="eng">POWERED BY THE MANDASTRONG ENGINE</div><h1 className="brand" style={{ fontSize: "clamp(26px,4.4vw,38px)", margin: "6px 0 0" }}>Mandas 1 Shot Film Studio</h1></div>
+          <div><div className="eng">POWERED BY THE MANDASTRONG ENGINE</div><h1 className="brand" style={{ fontSize: "clamp(26px,4.4vw,38px)", margin: "6px 0 0" }}>The 1 Shot Film Studio</h1></div>
         </div>
 
         {user ? (
@@ -1570,7 +1570,7 @@ export default function Studio() {
         </div>
         </div>
         {pendingSave && <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.75)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}><div style={{ background: "#111", border: "1px solid #c9a64a", borderRadius: 8, padding: 20, maxWidth: 420, width: "100%", textAlign: "center" }}><div style={{ color: "#f3e6c0", fontWeight: 700, marginBottom: 6 }}>{pendingSave.file.name}</div><div style={{ color: "#bba", fontSize: 13, marginBottom: 14 }}>Your file is ready. Tap Save, then choose where to keep it.</div><button className="b g" style={{ width: "100%" }} onClick={async () => { const p = pendingSave; setPendingSave(null); try { await navigator.share({ files: [p.file], title: p.file.name }); } catch (e) { if (!(e && e.name === "AbortError")) { const a = document.createElement("a"); a.href = p.url || URL.createObjectURL(p.file); a.download = p.file.name; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1500); } } }}>SAVE</button><button className="b s" style={{ width: "100%", marginTop: 8 }} onClick={() => setPendingSave(null)}>Cancel</button></div></div>}
-        <div className="ft">{simple ? "Powered by the MandaStrong Engine" : "Mandas 1 Shot Film Studio · Powered by the MandaStrong Engine"}</div>
+        <div className="ft">{simple ? "Powered by the MandaStrong Engine" : "The 1 Shot Film Studio · Powered by the MandaStrong Engine"}</div>
       </div>
     </div>
   );

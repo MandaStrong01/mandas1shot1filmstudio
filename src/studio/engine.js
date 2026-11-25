@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Engine helpers for Mandas Film & Music Studio (copied from the main app so the two apps stay independent).
+// Engine helpers for The 1 Shot Film Studio (copied from the main app so the two apps stay independent).
 import { createClient } from "@supabase/supabase-js";
 // ── SUPABASE AUTH ────────────────────────────────────────────────
 // Real accounts. The publishable key below is SAFE to ship — it is the
