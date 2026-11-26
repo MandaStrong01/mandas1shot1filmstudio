@@ -317,6 +317,7 @@ export default function Studio() {
   const [narrator, setNarrator] = useState(() => load("narrator", "james"));
   const [charVoices, setCharVoices] = useState(() => load("charVoices", true));
   const [lipSync, setLipSync] = useState(() => load("lipSync", false));
+  const [lsTest, setLsTest] = useState(null); // one-clip lip sync test: {msg, busy, url}
   const [speed, setSpeed] = useState(() => load("speed", 1));
   const [spoken, setSpoken] = useState(() => load("spoken", "English"));
   const [subs, setSubs] = useState(() => load("subs", true));
@@ -538,6 +539,32 @@ export default function Studio() {
   }, []);
 
   const voiceMeta = (id) => { const v = VOICE_CHARACTERS.find(x => x.id === id) || VOICE_CHARACTERS.find(x => x.id === "james"); return { voice: v.engineVoice || v.id, gender: v.gender || "", origin: v.origin || "", speed: Number(speed) || 1 }; };
+
+  // LIP SYNC TEST: one of YOUR clips and one of Lily's lines, sent once. About 300 credits. Nothing else in the film changes.
+  const lipTest = async () => {
+    const c = clips[0];
+    if (!c || !c.blob) { setLsTest({ msg: "Add your clips first, then press this again." }); return; }
+    if (c.blob.size > 18000000) { setLsTest({ msg: "The first clip is over 18 MB, too big for the test." }); return; }
+    try {
+      setLsTest({ msg: "Making Lily's test line…", busy: true });
+      const r = await msVoiceText("Twas the night before Christmas, when all through the house.", { voice: "ms_lily", gender: "", origin: "", speed: 1 });
+      if (!r.parts.length) throw new Error("the voice engine returned no audio");
+      const ab = new Blob(r.parts, { type: r.parts[0].type || "audio/mpeg" });
+      const secs = await new Promise(res => { const v = document.createElement("video"); v.preload = "metadata"; v.onloadedmetadata = () => res(v.duration || 0); v.onerror = () => res(0); v.src = URL.createObjectURL(c.blob); });
+      setLsTest({ msg: "Sending the clip for lip sync…", busy: true });
+      const hd = { "Content-Type": "application/json" };
+      const res = await fetch(LIPSYNC, { method: "POST", headers: hd, body: JSON.stringify({ video: await readAsDataURL(c.blob), audio: await readAsDataURL(ab), secs: Math.min(10, secs || 5) }) });
+      const d = await res.json(); if (d.error) throw new Error(d.error); if (!d.id) throw new Error("lip sync did not start");
+      for (let k = 0; k < 90; k++) {
+        setLsTest({ msg: "Lip sync is working… " + (d.credits ? "(about " + d.credits + " credits) " : "") + "keep this open.", busy: true });
+        await sleep(4000);
+        const pr = await fetch(LIPSYNC, { method: "POST", headers: hd, body: JSON.stringify({ pollId: d.id }) }); const p = await pr.json();
+        if (p.error) throw new Error(p.error);
+        if (p.video) { setLsTest({ msg: "Done." + (d.credits ? " It used about " + d.credits + " credits." : "") + " Play it below.", url: p.video }); return; }
+      }
+      throw new Error("it took too long");
+    } catch (e) { setLsTest({ msg: "Lip sync test: " + (e.message || e) }); }
+  };
 
   async function voiceIt(text, lang) {
     let t = text; if (lang && lang !== "English") t = await translateText(text, lang);
@@ -1336,8 +1363,11 @@ export default function Studio() {
           <button className="b" style={{ display: simple ? "none" : undefined }} onClick={() => { const n = splitPrompt(); setAddMsg(n ? "Split into the boxes below. " + n + " spoken lines." : "No [NAME] lines found. Put each spoken line as [NAME] line."); }}>SPLIT INTO THE BOXES ONLY</button>
           {simple ? <button onClick={() => setShowGuide(v => !v)}>{showGuide ? "Close prompt guide" : "Prompt guide"}</button> : <button className="b s" onClick={() => setShowGuide(v => !v)}>{showGuide ? "CLOSE PROMPT GUIDE" : "PROMPT GUIDE"}</button>}
           {(!busy && !designing) && (simple ? <button onClick={reVoice}>Re-voice my film</button> : <button className="b s" onClick={reVoice}>RE-VOICE MY FILM</button>)}
+          {(!busy && !designing) && (simple ? <button onClick={lipTest} disabled={!!(lsTest && lsTest.busy)}>Lip sync test</button> : <button className="b" onClick={lipTest} disabled={!!(lsTest && lsTest.busy)}>LIP SYNC TEST</button>)}
         </div>
         {rvMsg && <div className="msg" style={{ marginTop: 6 }}>{rvMsg}</div>}
+        {lsTest && lsTest.msg && <div className="msg" style={{ marginTop: 6 }}>{lsTest.msg}</div>}
+        {lsTest && lsTest.url && <video src={lsTest.url} controls playsInline style={{ width: "100%", maxWidth: 520, marginTop: 8, borderRadius: 8 }} />}
         {showGuide && <div className="guide" style={{ whiteSpace: "normal" }}>
           <div style={{ fontWeight: 600, marginBottom: 8 }}>FILL IN WHAT YOU KNOW. LEAVE THE REST TO THE ENGINE.</div>
           <div style={{ display: "grid", gap: 8 }}>
