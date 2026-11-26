@@ -72,6 +72,16 @@ const MOODS = [
   { id: "sad", label: "Melancholy", url: "https://cdn.pixabay.com/audio/2022/10/18/audio_31a1f6f2a6.mp3" },
   { id: "action", label: "Action", url: "https://cdn.pixabay.com/audio/2022/11/22/audio_febc508520.mp3" },
 ];
+// Built-in character voices for Santa's List: kids sound like kids, the fairy and Santa sound like themselves. They are made by the voice engine, not copied from an uploaded file.
+const BUILTIN_VOICE = { LILY: "ms_lily", MAX: "ms_max", HOLLY: "ms_holly", THOMAS: "ms_thomas", FIZZ: "ms_fizz", SANTA: "ms_santa" };
+const builtinFor = (speakers) => {
+  const nm = x => String(x.label || x.key || "").toUpperCase().replace(/[^A-Z]/g, "");
+  const names = speakers.map(nm); const out = {};
+  if (!names.includes("SANTA") || !(names.includes("LILY") || names.includes("MAX"))) return out;
+  speakers.forEach(sp => { const v = BUILTIN_VOICE[nm(sp)]; if (v) out[sp.key] = v; });
+  return out;
+};
+const XMAS_MUSIC = "warm orchestral Christmas film score, classic Christmas carol melodies, sleigh bells, soft strings, harp, glockenspiel, gentle choir, magical and heartwarming, plays quietly under dialogue, steady and loopable";
 const LANGS = ["English", "French", "Spanish", "German", "Italian", "Portuguese", "Dutch", "Polish", "Russian", "Arabic", "Hindi", "Mandarin Chinese", "Japanese", "Korean", "Turkish", "Greek"];
 const RATIOS = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "21:9": [21, 9] };
 
@@ -534,9 +544,9 @@ export default function Studio() {
     const cast = msParseCast(t); let parts = []; let lostLines = 0; const segs = [];
     if ((charVoices || charRecs.length) && cast.speakers.length >= 2) {
       const cmap = msCastVoices(cast.speakers, narrator, t);
-      const umap = charVoiceMap(cast.speakers); const uid = {};
+      const umap = charVoiceMap(cast.speakers); const uid = {}; const bmap = builtinFor(cast.speakers); for (const k of Object.keys(bmap)) delete umap[k];
       // Nobody has to say who uses which voice: any character without a voice yet gets one of YOUR uploaded voices automatically (unused voices first).
-      if (charRecs.length) { const usedR = new Set(Object.values(umap)); let rr = 0; for (const sp of cast.speakers) { if (umap[sp.key]) continue; const free_ = charRecs.filter(r => !usedR.has(r)); const pick = free_.length ? free_[0] : charRecs[rr++ % charRecs.length]; umap[sp.key] = pick; usedR.add(pick); } }
+      if (charRecs.length) { const usedR = new Set(Object.values(umap)); let rr = 0; for (const sp of cast.speakers) { if (umap[sp.key] || bmap[sp.key]) continue; const free_ = charRecs.filter(r => !usedR.has(r)); const pick = free_.length ? free_[0] : charRecs[rr++ % charRecs.length]; umap[sp.key] = pick; usedR.add(pick); } }
       for (const k of Object.keys(umap)) { setStage("Copying " + umap[k].name + "'s voice for " + ((cast.speakers.find(x => x.key === k) || {}).label || k) + "…"); uid[k] = await cloneOf(umap[k]); }
       // Your voices are never swapped for a stock voice without telling you: stop and say which character failed.
       if (charRecs.length) {
@@ -544,13 +554,13 @@ export default function Studio() {
         for (const k of Object.keys(umap)) { if (!uid[k]) { uid[k] = await cloneOf(umap[k]); } }
         const noClone = Object.keys(umap).filter(k => !uid[k]).map(lab);
         if (noClone.length) throw Object.assign(new Error("Stopped before spending credit: your voice file could not be copied for " + noClone.join(", ") + ". Check the engine has credit and the file plays, then press Make again."), { stopFilm: true });
-        const noVoice = cast.speakers.filter(sp => !umap[sp.key]).map(sp => sp.label || sp.key);
+        const noVoice = cast.speakers.filter(sp => !umap[sp.key] && !bmap[sp.key]).map(sp => sp.label || sp.key);
         if (noVoice.length) throw Object.assign(new Error("Stopped before spending credit: no uploaded voice is matched to " + noVoice.join(", ") + ". Name each voice file after its character (Doxy, Lily, Ethan) and list who uses it, like DOXY'S VOICE: Santa, Max."), { stopFilm: true });
       }
       for (let i = 0; i < cast.segments.length; i++) {
         const sg = cast.segments[i]; const vc = sg.sp ? cmap[sg.sp] : null;
         setStage("Voicing " + (sg.sp ? (cast.speakers.find(x => x.key === sg.sp) || {}).label : "narrator") + " — " + (i + 1) + " of " + cast.segments.length);
-        const meta = (sg.sp && uid[sg.sp]) ? { voice: uid[sg.sp], speed: Number(speed) || 1 } : vc ? { voice: vc.engineVoice || vc.id, gender: vc.gender || "", origin: vc.origin || "", speed: Number(speed) || 1 } : voiceMeta(narrator);
+        const meta = (sg.sp && bmap[sg.sp]) ? { voice: bmap[sg.sp], gender: "", origin: "", speed: Number(speed) || 1 } : (sg.sp && uid[sg.sp]) ? { voice: uid[sg.sp], speed: Number(speed) || 1 } : vc ? { voice: vc.engineVoice || vc.id, gender: vc.gender || "", origin: vc.origin || "", speed: Number(speed) || 1 } : voiceMeta(narrator);
         const r = await msVoiceText(sg.text, { ...meta, language: lang && lang !== "English" ? lang : "" }); parts.push(...r.parts); if (r.failed) lostLines += r.failed;
         segs.push({ text: sg.text, blob: r.parts.length ? new Blob(r.parts, { type: r.parts[0].type || "audio/mpeg" }) : null });
       }
@@ -924,8 +934,9 @@ export default function Studio() {
 
       // 3 — music
       let mUrl = "";
+      const xmasFilm = /christmas|santa|xmas|sleigh|north pole/i.test(String(title || "") + " " + String(narr || "").slice(0, 4000) + " " + String(script || "").slice(0, 4000));
       if (musicMode === "mine" && mySong) mUrl = mySong.url;
-      else if (musicMode === "make") { try { setStage("MandaStrong Engine — composing your music…"); const u = await seRun({ kind: "music", prompt: (musicPrompt || (style + " " + kind + " score, " + (MOODS.find(m => m.id === mood) || MOODS[0]).label)) + (mGenre ? ", " + mGenre : "") + (tempo ? ", " + tempo.toLowerCase() + " tempo" : "") + ", instrumental", duration: 30 }, 6); const b = await toBlob(u); await dbPut(projectId.current + "_music", b, {}); mUrl = URL.createObjectURL(b); } catch (e) { setErr("Music: " + e.message + ". Using the library track instead."); mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url); } }
+      else if (musicMode === "make" || (musicMode === "library" && xmasFilm)) { try { setStage("MandaStrong Engine — composing your music…"); const u = await seRun({ kind: "music", prompt: (musicPrompt || (xmasFilm ? XMAS_MUSIC : (style + " " + kind + " score, " + (MOODS.find(m => m.id === mood) || MOODS[0]).label))) + (mGenre ? ", " + mGenre : "") + (tempo ? ", " + tempo.toLowerCase() + " tempo" : "") + ", instrumental", duration: 60 }, 6); const b = await toBlob(u); await dbPut(projectId.current + "_music", b, {}); mUrl = URL.createObjectURL(b); } catch (e) { setErr("Music: " + e.message + ". Using the library track instead."); mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url); } }
       else if (musicMode === "library") mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url);
       setMusicUrl(mUrl); setPct(24);
 
