@@ -590,7 +590,7 @@ export default function Studio() {
         setStage("Voicing " + (sg.sp ? (cast.speakers.find(x => x.key === sg.sp) || {}).label : "narrator") + " — " + (i + 1) + " of " + cast.segments.length);
         const meta = (sg.sp && bmap[sg.sp]) ? { voice: bmap[sg.sp], gender: "", origin: "", speed: Number(speed) || 1 } : (sg.sp && uid[sg.sp]) ? { voice: uid[sg.sp], speed: Number(speed) || 1 } : vc ? { voice: vc.engineVoice || vc.id, gender: vc.gender || "", origin: vc.origin || "", speed: Number(speed) || 1 } : voiceMeta(narrator);
         const r = await msVoiceText(sg.text, { ...meta, language: lang && lang !== "English" ? lang : "" }); parts.push(...r.parts); if (r.failed) lostLines += r.failed;
-        segs.push({ text: sg.text, blob: r.parts.length ? new Blob(r.parts, { type: r.parts[0].type || "audio/mpeg" }) : null });
+        segs.push({ sp: sg.sp || "", text: sg.text, blob: r.parts.length ? new Blob(r.parts, { type: r.parts[0].type || "audio/mpeg" }) : null });
       }
     } else {
       const r = await msVoiceText(t, { ...voiceMeta(narrator), language: lang && lang !== "English" ? lang : "" }, (i, n) => setStage("MandaStrong Engine — voicing part " + i + " of " + n + (lang && lang !== "English" ? " (" + lang + ")" : ""))); parts = r.parts;
@@ -627,7 +627,7 @@ export default function Studio() {
     for (let i = 0; i < segs.length; i++) { const b = bufs[i]; if (!b) continue; const o = Math.floor(at[i] * SR); for (let j = 0; j < b.length && o + j < n; j++) { const v = Math.max(-1, Math.min(1, b[j])); pcm[o + j] = v < 0 ? v * 32768 : v * 32767; } }
     const hd = new DataView(new ArrayBuffer(44)); const w = (p, x) => { for (let i = 0; i < x.length; i++) hd.setUint8(p + i, x.charCodeAt(i)); };
     w(0, "RIFF"); hd.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt "); hd.setUint32(16, 16, true); hd.setUint16(20, 1, true); hd.setUint16(22, 1, true); hd.setUint32(24, SR, true); hd.setUint32(28, SR * 2, true); hd.setUint16(32, 2, true); hd.setUint16(34, 16, true); w(36, "data"); hd.setUint32(40, n * 2, true);
-    return { blob: new Blob([hd.buffer, pcm.buffer], { type: "audio/wav" }), secs: total };
+    return { blob: new Blob([hd.buffer, pcm.buffer], { type: "audio/wav" }), secs: total, lines: segs.map((sg, i) => ({ sp: sg.sp || "", t0: at[i], buf: bufs[i] })) };
   }
 
   // Turns a picture (your photo or a stock photo) into a moving shot.
@@ -894,6 +894,47 @@ export default function Studio() {
       setDesigning(false); setErr(String((e && e.message) || e)); setStage("");
     }
   }
+  // WHOLE-FILM LIP SYNC: every shot where a character speaks is sent once, with that shot's own line placed at the right moment
+  // (silence before and after). The narrator's shots are left alone. The film's voice track is not touched, so the sound stays in sync.
+  async function lipSyncFilm(lines, shotBlobs, plan) {
+    const SR = 16000, nS = plan.nShots, shotLen = plan.total / nS; const groups = {};
+    for (const ln of lines || []) { if (!ln.sp || !ln.buf || !ln.buf.length) continue; const j = Math.max(0, Math.min(nS - 1, Math.floor(ln.t0 / shotLen))); (groups[j] = groups[j] || []).push(ln); }
+    const keys = Object.keys(groups).map(Number).sort((a, b) => a - b); if (!keys.length) return;
+    let done = 0, ok = 0, bad = 0, credits = 0, stop = false;
+    const secsOf = (b) => new Promise(res => { let d = false; const fin = x => { if (!d) { d = true; res(x || 0); } }; const v = document.createElement("video"); v.preload = "metadata"; v.muted = true; v.onloadedmetadata = () => fin(v.duration); v.onerror = () => fin(0); setTimeout(() => fin(0), 6000); v.src = URL.createObjectURL(b); });
+    const one = async (j) => {
+      const blob = shotBlobs[j]; if (!blob || !/^video/.test(blob.type || "") || blob.size > 14000000) { bad++; return; }
+      const secs = await secsOf(blob); if (!(secs > 0.8) || secs > 10.05) { bad++; return; }
+      const n = Math.ceil(secs * SR); const pcm = new Int16Array(n); let used = 0;
+      for (const ln of groups[j]) { const off = Math.floor((ln.t0 - j * shotLen) * SR); if (off < 0 || off >= n - SR * 0.5) continue; used++; for (let k = 0; k < ln.buf.length && off + k < n; k++) { const v = Math.max(-1, Math.min(1, ln.buf[k])); pcm[off + k] = v < 0 ? v * 32768 : v * 32767; } }
+      if (!used) { bad++; return; }
+      const hd = new DataView(new ArrayBuffer(44)); const w = (p, x) => { for (let i = 0; i < x.length; i++) hd.setUint8(p + i, x.charCodeAt(i)); };
+      w(0, "RIFF"); hd.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt "); hd.setUint32(16, 16, true); hd.setUint16(20, 1, true); hd.setUint16(22, 1, true); hd.setUint32(24, SR, true); hd.setUint32(28, SR * 2, true); hd.setUint16(32, 2, true); hd.setUint16(34, 16, true); w(36, "data"); hd.setUint32(40, n * 2, true);
+      const hdr = { "Content-Type": "application/json" };
+      const res = await fetch(LIPSYNC, { method: "POST", headers: hdr, body: JSON.stringify({ video: await readAsDataURL(blob), audio: await readAsDataURL(new Blob([hd.buffer, pcm.buffer], { type: "audio/wav" })), secs }) });
+      const d = await res.json().catch(() => ({ error: "server error " + res.status }));
+      if (d.error || !d.id) { bad++; if (/credit|402|insufficient|key missing/i.test(String(d.error))) stop = true; return; }
+      credits += Number(d.credits) || 0;
+      for (let t = 0; t < 90; t++) {
+        await sleep(4000);
+        const pr = await fetch(LIPSYNC, { method: "POST", headers: hdr, body: JSON.stringify({ pollId: d.id }) }); const p = await pr.json().catch(() => ({}));
+        if (p.error) { bad++; return; }
+        if (p.video) {
+          const nb = await toBlob(p.video); const ns = nb ? await secsOf(nb) : 0;
+          if (!nb || nb.size < 10000 || ns < secs * 0.8) { bad++; return; }
+          await dbPut(projectId.current + "_scene_" + j, nb, { i: j, text: "", source: "lip sync" });
+          setScenes(pv => pv.map((sc, k) => k === j ? { ...sc, blob: nb, url: URL.createObjectURL(nb), source: "lip sync" } : sc)); ok++; return;
+        }
+      }
+      bad++;
+    };
+    let next = 0;
+    const worker = async () => { while (next < keys.length && !stop) { const j = keys[next++]; setStage("Lip sync: speaking shot " + (done + 1) + " of " + keys.length + "…"); try { await one(j); } catch (e) { bad++; } done++; setPct(Math.min(99, 90 + Math.round(done / keys.length * 9))); } };
+    await Promise.all([worker(), worker(), worker()]);
+    setStage("Lip sync done on " + ok + " of " + keys.length + " speaking shots (about " + credits + " credits)." + (stop ? " Stopped: the lip-sync engine is out of credit." : ""));
+    if (bad) setErr(bad + " speaking shot" + (bad > 1 ? "s" : "") + " could not be lip synced and keep the original picture.");
+  }
+
   const makeMovie = async () => {
     setErr("");
     if (voiceMode === "mine" && !myRec) { setErr("Your recording is not loaded. Press UPLOAD MY RECORDING, choose your file, then press Make again. I will not use another voice."); return; }
@@ -940,14 +981,14 @@ export default function Studio() {
       setScenes(list.map(t => ({ text: t, status: "waiting" }))); setPct(6);
 
       // 2 — narration (yours or the engine), translated if asked
-      let nUrl = "", nText = "", nSecs = 0, firstVoice = "";
+      let nUrl = "", nText = "", nSecs = 0, firstVoice = "", lsLines = null; const shotBlobs = [];
       // Your own clips carry their own voices. With clips and no narration, the engine does not voice the script at all.
       const clipVoices = clips.length > 0 && !narr.trim() && voiceMode !== "mine";
       const spokenText = clipVoices ? "" : (narr.trim() || msSpokenOnly(script));
       if (clipVoices) setStage("Using the voices in your clips.");
       if (voiceMode === "mine" && myRec) { nUrl = myRec.url; nText = spokenText; nSecs = (await audioSecs(myRec.blob)) || (await msBlobSeconds(myRec.blob)); await dbPut(projectId.current + "_narr", myRec.blob, { text: nText, secs: nSecs }); if (tail) nSecs += tail.secs; }
       else if (spokenText) {
-        try { const v = await voiceIt(spokenText, spoken); try { const st = await syncedTrack(v.segs || [], syncPlan); if (st) v.blob = st.blob; } catch (e) { } nUrl = URL.createObjectURL(v.blob); nText = v.text; nSecs = (v.blob.type === "audio/wav" ? await audioSecs(v.blob) : 0) || await msBlobSeconds(v.blob); await dbPut(projectId.current + "_narr", v.blob, { text: nText, secs: nSecs }); if (lipSync) firstVoice = await readAsDataURL(v.blob.slice(0, 600000, v.blob.type)); }
+        try { const v = await voiceIt(spokenText, spoken); try { const st = await syncedTrack(v.segs || [], syncPlan); if (st) { v.blob = st.blob; lsLines = st.lines; } } catch (e) { } nUrl = URL.createObjectURL(v.blob); nText = v.text; nSecs = (v.blob.type === "audio/wav" ? await audioSecs(v.blob) : 0) || await msBlobSeconds(v.blob); await dbPut(projectId.current + "_narr", v.blob, { text: nText, secs: nSecs }); if (lipSync) firstVoice = await readAsDataURL(v.blob.slice(0, 600000, v.blob.type)); }
         catch (e) {
           if (e && e.stopFilm) throw e;
           if (myRec) { nUrl = myRec.url; nText = spokenText; nSecs = (await audioSecs(myRec.blob)) || (await msBlobSeconds(myRec.blob)); await dbPut(projectId.current + "_narr", myRec.blob, { text: nText, secs: nSecs }); if (tail) nSecs += tail.secs; setStage("Engine has no credit. Using your own recording as the voice."); }
@@ -973,10 +1014,11 @@ export default function Studio() {
       await planScenes(list);
       // 4 — scenes, ONE at a time (the engine limit allows one request at a time; throttled ones wait and retry by themselves)
       let next = 0, finished = 0; const failed = [];
-      const worker = async () => { while (next < list.length) { const i = next++; setStage("MandaStrong Engine — making scene " + (i + 1) + " of " + list.length + "…"); const b = await makeScene(i, list[i], { firstVoice }); if (!b) failed.push(i); finished++; setPct(24 + Math.round(finished / list.length * 74)); } };
+      const worker = async () => { while (next < list.length) { const i = next++; setStage("MandaStrong Engine — making scene " + (i + 1) + " of " + list.length + "…"); const b = await makeScene(i, list[i], { firstVoice }); if (!b) failed.push(i); else shotBlobs[i] = b; finished++; setPct(24 + Math.round(finished / list.length * 74)); } };
       await worker();
       // Any scene that came back empty gets one more try before the film is joined.
-      for (const i of failed) { setStage("Trying scene " + (i + 1) + " again…"); await makeScene(i, list[i], { firstVoice }); }
+      for (const i of failed) { setStage("Trying scene " + (i + 1) + " again…"); { const b2 = await makeScene(i, list[i], { firstVoice }); if (b2) shotBlobs[i] = b2; } }
+      if (lipSync && lsLines && !freeMode) { try { await lipSyncFilm(lsLines, shotBlobs, syncPlan); } catch (e) { setErr("Lip sync stopped: " + (e.message || e) + ". The film keeps its original pictures."); } }
       // Then every scene is joined into ONE film file automatically.
       autoJoin.current = true;
       setPct(100); setStage("All scenes made. Joining them into one film — keep this tab open."); setDone(true);
@@ -1460,7 +1502,7 @@ export default function Studio() {
           <div><span className="lbl">CHARACTER VOICES</span><button className={"c" + (charVoices ? " on" : "")} style={{ width: "100%" }} onClick={() => setCharVoices(!charVoices)}>{charVoices ? "Auto-cast from script" : "Narrator only"}</button></div>
           <div><span className="lbl">VOICE SPEED {Number(speed).toFixed(1)}×</span><input type="range" className="rng" min={0.7} max={1.3} step={0.05} value={speed} onChange={e => setSpeed(Number(e.target.value))} /></div>
         </div>
-        <div className="row" style={{ marginTop: 8 }}><Toggle on={lipSync} set={setLipSync}>Lip sync {lipSync ? "ON" : "OFF"}</Toggle>{lipSync && !photos.length && <span className="msg">Add a face photo for lip sync.</span>}</div>
+        <div className="row" style={{ marginTop: 8 }}><Toggle on={lipSync} set={setLipSync}>Lip sync {lipSync ? "ON" : "OFF"}</Toggle>{lipSync && <span className="msg">Every shot where a character speaks is lip synced. About 30 credits per second of those shots.</span>}</div>
 
         <div className="lab">6 · LANGUAGE</div>
         <div className="g3">
