@@ -544,17 +544,18 @@ export default function Studio() {
   const lipTest = async () => {
     const c = clips[0];
     if (!c || !c.blob) { setLsTest({ msg: "Add your clips first, then press this again." }); return; }
-    if (c.blob.size > 18000000) { setLsTest({ msg: "The first clip is over 18 MB, too big for the test." }); return; }
+    if (c.blob.size > 14000000) { setLsTest({ msg: "The first clip is over 14 MB, too big for the test." }); return; }
     try {
       setLsTest({ msg: "Making Lily's test line…", busy: true });
       const r = await msVoiceText("Twas the night before Christmas, when all through the house.", { voice: "ms_lily", gender: "", origin: "", speed: 1 });
       if (!r.parts.length) throw new Error("the voice engine returned no audio");
       const ab = new Blob(r.parts, { type: r.parts[0].type || "audio/mpeg" });
-      const secs = await new Promise(res => { const v = document.createElement("video"); v.preload = "metadata"; v.onloadedmetadata = () => res(v.duration || 0); v.onerror = () => res(0); v.src = URL.createObjectURL(c.blob); });
+      setLsTest({ msg: "Lily's line is ready. Reading the clip…", busy: true });
+      const secs = await new Promise(res => { let done = false; const fin = x => { if (!done) { done = true; res(x || 0); } }; const v = document.createElement("video"); v.preload = "metadata"; v.muted = true; v.onloadedmetadata = () => fin(v.duration); v.onerror = () => fin(0); setTimeout(() => fin(0), 5000); v.src = URL.createObjectURL(c.blob); });
       setLsTest({ msg: "Sending the clip for lip sync…", busy: true });
       const hd = { "Content-Type": "application/json" };
       const res = await fetch(LIPSYNC, { method: "POST", headers: hd, body: JSON.stringify({ video: await readAsDataURL(c.blob), audio: await readAsDataURL(ab), secs: Math.min(10, secs || 5) }) });
-      const d = await res.json(); if (d.error) throw new Error(d.error); if (!d.id) throw new Error("lip sync did not start");
+      const d = await res.json().catch(() => ({ error: "the server answered with an error (" + res.status + "). The clip may be too big." })); if (d.error) throw new Error(d.error); if (!d.id) throw new Error("lip sync did not start");
       for (let k = 0; k < 90; k++) {
         setLsTest({ msg: "Lip sync is working… " + (d.credits ? "(about " + d.credits + " credits) " : "") + "keep this open.", busy: true });
         await sleep(4000);
