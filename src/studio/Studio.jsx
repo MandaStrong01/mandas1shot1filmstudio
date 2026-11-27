@@ -47,6 +47,9 @@ const SHOT_SECS = 10, SLOW = 0.5, SHOT_CAP = 360;
 const CLONE_CACHE = new Map();
 const ANGLES = ["wide establishing shot", "close-up on the faces", "slow push-in from behind", "over-the-shoulder shot", "low angle looking up", "high angle looking down", "side view, tracking along", "detail shot of hands and objects", "slow pull-back to reveal the room", "medium two-shot, gentle camera drift"];
 const slowOf = s => (s && s.source === "engine") ? SLOW : 1;
+// A clip shorter than its slot is STRETCHED (played slower) to fill it, not looped. Lip-synced clips stay at normal speed so the mouth matches the voice.
+const rateOf = (s, len) => { const b = slowOf(s); if (s && s.source === "your clip" && s.dur > 0 && len > s.dur + 0.3) return Math.max(0.35, s.dur / len); return b; };
+const clipDur = (b) => new Promise(res => { try { let d = false; const fin = x => { if (!d) { d = true; res(isFinite(x) ? x : 0); } }; const v = document.createElement("video"); v.preload = "metadata"; v.muted = true; v.onloadedmetadata = () => fin(v.duration); v.onerror = () => fin(0); setTimeout(() => fin(0), 5000); v.src = URL.createObjectURL(b); } catch (e) { res(0); } });
 const GENRES = ["Drama", "Comedy", "Family", "Holiday", "Adventure", "Fantasy", "Sci-fi", "Romance", "Action", "Mystery", "Thriller", "Horror", "Western", "Historical", "Inspirational", "Educational"];
 const AUDIENCES = ["Kids", "Family", "Teens", "Adults"];
 const TOONS = ["2D hand-drawn", "3D animated", "Anime", "Claymation", "Stop motion", "Watercolour storybook", "Comic book", "Pixel art"];
@@ -605,7 +608,7 @@ export default function Studio() {
     const SR = 16000; const good = segs.filter(x => x.blob); if (!good.length || !plan || !plan.nShots) return null;
     setStage("Putting every line in its scene…");
     const bufs = [];
-    for (const sg of segs) { let d = null; if (sg.blob) { try { const oc = new OfflineAudioContext(1, SR, SR); const b = await oc.decodeAudioData(await sg.blob.arrayBuffer()); const a = new Float32Array(b.length); for (let c = 0; c < b.numberOfChannels; c++) { const ch = b.getChannelData(c); for (let i = 0; i < a.length; i++) a[i] += ch[i] / b.numberOfChannels; } d = a; } catch (e) { } } bufs.push(d); }
+    for (const sg of segs) { let d = null; if (sg.blob) { try { const oc = new OfflineAudioContext(1, SR, SR); const b = await oc.decodeAudioData(await sg.blob.arrayBuffer()); const a = new Float32Array(b.length); for (let c = 0; c < b.numberOfChannels; c++) { const ch = b.getChannelData(c); for (let i = 0; i < a.length; i++) a[i] += ch[i] / b.numberOfChannels; } d = a; } catch (e) { } } if (d && d.length) { let pk = 0, sq = 0, cnt = 0; for (let i = 0; i < d.length; i++) { const x = Math.abs(d[i]); if (x > pk) pk = x; if (x > 0.02) { sq += x * x; cnt++; } } const rms = cnt > 200 ? Math.sqrt(sq / cnt) : 0; if (rms > 0 && pk > 0) { const g = Math.min(0.2 / rms, 0.95 / pk, 6); for (let i = 0; i < d.length; i++) d[i] *= g; } } bufs.push(d); }
     const sc = plan.scenes || []; let assign = null;
     if (sc.length > 1) {
       try {
@@ -684,7 +687,7 @@ export default function Studio() {
     if (!blob) { const r2 = await stockScene(plan, i, text, freeMode); if (r2) { blob = r2.blob; source = r2.source; } }
     if (!blob) { setS({ status: "failed", note: note || "No picture came back" }); return null; }
     await dbPut(projectId.current + "_scene_" + i, blob, { i, text, source });
-    setS({ status: "done", blob, url: URL.createObjectURL(blob), source, note });
+    const dur = await clipDur(blob); setS({ status: "done", blob, url: URL.createObjectURL(blob), source, note, dur });
     return blob;
   }
 
@@ -1049,7 +1052,7 @@ export default function Studio() {
     const iv = setInterval(() => {
       const c = (Date.now() - t0) / 1000; setClock(c);
       const k = Math.min(ready.length - 1, Math.floor(c / sceneLen));
-      if (k !== curRef.current && ready[k]) { curRef.current = k; const v = vRef.current; if (v) { v.style.opacity = 0; setTimeout(() => { setCur(k); v.src = ready[k].url; v.loop = !isStill(ready[k]); v.playbackRate = slowOf(ready[k]); v.play().catch(() => { }); setTimeout(() => { v.style.opacity = 1; }, 120); }, 450); } else setCur(k); }
+      if (k !== curRef.current && ready[k]) { curRef.current = k; const v = vRef.current; if (v) { v.style.opacity = 0; setTimeout(() => { setCur(k); v.src = ready[k].url; v.loop = !isStill(ready[k]); v.playbackRate = rateOf(ready[k], sceneLen); v.play().catch(() => { }); setTimeout(() => { v.style.opacity = 1; }, 120); }, 450); } else setCur(k); }
       const m = mRef.current; const talking = (nRef.current && !nRef.current.paused) || (tRef.current && !tRef.current.paused); if (m) m.volume = Math.max(0, Math.min(1, mVol * (duck && activeNarr && talking ? 0.45 : 1)));
       if (c >= total) { setPlaying(false); try { nRef.current && nRef.current.pause(); tRef.current && tRef.current.pause(); mRef.current && mRef.current.pause(); vRef.current && vRef.current.pause(); } catch (e) { } }
     }, 200);
@@ -1060,7 +1063,7 @@ export default function Studio() {
     const v = vRef.current, n = nRef.current, m = mRef.current;
     if (playing) { [v, n, m, tRef.current].forEach(x => { try { x && x.pause(); } catch (e) { } }); setPlaying(false); return; }
     if (clock >= total) { setClock(0); setCur(0); if (v) v.src = ready[0].url; if (n) n.currentTime = 0; if (m) m.currentTime = 0; if (tRef.current) { tRef.current.pause(); tRef.current.currentTime = 0; } }
-    if (v) { if (!v.src) v.src = ready[cur].url; v.loop = !isStill(ready[cur]); v.playbackRate = slowOf(ready[cur]); v.muted = !hasSound(ready[cur]); v.volume = cVol; v.play().catch(() => { }); }
+    if (v) { if (!v.src) v.src = ready[cur].url; v.loop = !isStill(ready[cur]); v.playbackRate = rateOf(ready[cur], sceneLen); v.muted = !hasSound(ready[cur]); v.volume = cVol; v.play().catch(() => { }); }
     if (n && activeNarr) { const t = tRef.current; if (useTail && t && n.ended && t.currentTime > 0) { t.volume = vVol; t.play().catch(() => { }); } else { n.volume = vVol; n.play().catch(() => { }); } }
     if (m && musicUrl) { m.loop = true; m.play().catch(() => { }); }
     setPlaying(true);
@@ -1164,7 +1167,7 @@ export default function Studio() {
     if (title) { const tEnd = Date.now() + 3000; while (Date.now() < tEnd && !stopExp.current) { card([title, kind], true); await sleep(33); } }
     if (nEl) try { await nEl.play(); } catch (e) { }
     const tStart = Date.now();
-    const mkV = s => { const v = document.createElement("video"); v._clip = /^(your clip|engine still from your footage|engine)$/.test(String(s.source || "")); v.src = s.url; v.muted = !hasSound(s); v.loop = !isStill(s); v.playbackRate = slowOf(s); v.playsInline = true; v.preload = "auto"; v.setAttribute("playsinline", ""); v.setAttribute("webkit-playsinline", ""); v.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1"; try { document.body.appendChild(v); } catch (e) { }
+    const mkV = s => { const v = document.createElement("video"); v._clip = /^(your clip|engine still from your footage|engine)$/.test(String(s.source || "")); v.src = s.url; v.muted = !hasSound(s); v.loop = !isStill(s); v.playbackRate = rateOf(s, len); v.playsInline = true; v.preload = "auto"; v.setAttribute("playsinline", ""); v.setAttribute("webkit-playsinline", ""); v.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1"; try { document.body.appendChild(v); } catch (e) { }
       if (!v.muted) { try { const cg = ac.createGain(); cg.gain.value = cVol; ac.createMediaElementSource(v).connect(cg); cg.connect(dest); } catch (e) { v.muted = true; } }
       v._ok = new Promise(res => { v.onloadeddata = res; v.oncanplay = res; v.onerror = res; setTimeout(res, 8000); }); return v; };
     const FADE = Math.min(1.2, len * 0.3);
