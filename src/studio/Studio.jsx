@@ -319,7 +319,7 @@ export default function Studio() {
   const [voiceMode, setVoiceMode] = useState(() => load("voiceMode", "engine")); // engine | mine
   const [narrator, setNarrator] = useState(() => load("narrator", "james"));
   const [charVoices, setCharVoices] = useState(() => load("charVoices", true));
-  const [lipSync, setLipSync] = useState(() => load("lipSync", false));
+  const [lipSync, setLipSync] = useState(() => load("lipSync", true));
   const [lsTest, setLsTest] = useState(null); // one-clip lip sync test: {msg, busy, url}
   const [speed, setSpeed] = useState(() => load("speed", 1));
   const [spoken, setSpoken] = useState(() => load("spoken", "English"));
@@ -364,6 +364,7 @@ export default function Studio() {
   const planRef = useRef([]);
   const shotMap = useRef(null);
   const engineFails = useRef(0), engineOff = useRef(false); // after 2 failed engine shots in a row the engine stops for this film, so no more credit is spent
+  const charLockRef = useRef(""); // compact character descriptions from the writer, injected into every engine shot so each character looks the same all the way through
   const lastClipRef = useRef(null), reuseN = useRef(0); // your clips are reused (never back to back) when the engine cannot make a scene
   useEffect(() => { const o = { kind, title, narr, script, voiceMode, narrator, charVoices, lipSync, speed, spoken, subs, dubs, musicMode, mood, musicPrompt, style, grade, enhance, duck, cleanVoice, minutes, ratio, quality, vVol, mVol, cVol, allRatios, credits, watermark, creditNames, plan, genre, audience, toon, camera, pace, place, episodes, mGenre, tempo }; for (const k in o) save(k, o[k]); });
 
@@ -651,7 +652,7 @@ export default function Studio() {
   }
 
   async function makeScene(i, text, list) {
-    const look = style + " style, " + (GRADES.find(g => g.id === grade) || GRADES[0]).prompt + (enhance ? (animKind ? ", crisp clean linework, rich colour, sharp detail" : ", photorealistic, 35mm film grain, sharp detail") : "") + (shotBrief ? ", " + shotBrief : "") + (animKind ? ", Pixar-style 3D animated feature film, expressive characters moving and acting all the time, gentle moving camera, never a frozen picture" : "") + (/christmas|santa|xmas|sleigh|north pole/i.test(String(title || "") + " " + String(onePrompt || "").slice(0, 4000) + " " + String(script || "").slice(0, 4000)) ? ", Christmas Eve winter night, snow falling softly, frosted windows, visible breath clouds, glowing snow, deep blue night outdoors, warm gold light indoors" : "") + ", no on-screen text";
+    const look = style + " style, " + (GRADES.find(g => g.id === grade) || GRADES[0]).prompt + (enhance ? (animKind ? ", crisp clean linework, rich colour, sharp detail" : ", photorealistic, 35mm film grain, sharp detail") : "") + (shotBrief ? ", " + shotBrief : "") + (animKind ? ", Pixar-style 3D animated feature film, expressive characters moving and acting all the time, gentle moving camera, never a frozen picture" : "") + (charLockRef.current ? ". CHARACTER CONSISTENCY: keep these characters looking exactly the same in every shot — " + charLockRef.current : "") + (/christmas|santa|xmas|sleigh|north pole|santa'?s list|book of names/i.test(String(title || "") + " " + String(onePrompt || "").slice(0, 4000) + " " + String(script || "").slice(0, 4000)) ? ", Christmas Eve winter night, snow falling softly, frosted windows, visible breath clouds, glowing snow, deep blue night outdoors, warm gold light indoors" : "") + ", no on-screen text, never repeat the same shot, every shot is new footage, no looping, no freeze frames";
     const plan = planRef.current[i] || null;
     const photo = plan && plan.photo >= 0 && photos[plan.photo] ? photos[plan.photo].dataUrl : "";
     const setS = (patch) => setScenes(p => p.map((s, k) => k === i ? { ...s, ...patch } : s));
@@ -859,12 +860,13 @@ export default function Studio() {
       mins = (mh || mm) ? mins : minutes; mins = Math.max(1, Math.min(180, mins));
       const N = Math.max(4, Math.min(180, Math.round(mins * (mins <= 10 ? 2 : 1)))); // same rule as the scene counter: one scene a minute (two a minute up to 10 min)
       const animated = animKind || /\b(animated|animation|pixar|cartoon)\b/i.test(idea);
-      const raw = await ask('You are a film writer and director. The idea: """' + idea + '"""\nDesign a ' + mins + '-minute ' + (animated ? "animated " : "") + 'film. Return ONLY JSON, no other text: {"title":"","premise":"2 sentences","look":"2 sentences on colours, light, style","setting":"time of year, weather, places","characters":[{"name":"UPPERCASE NAME","who":"age, sex, personality, what they look like"}],"scenes":[{"title":"","summary":"one short sentence"}]}. Use EXACTLY ' + N + ' scenes in story order with a clear beginning, middle and end. Use at most 8 characters. Names are UPPERCASE letters only. Keep it warm and family friendly unless the idea says otherwise.' + (brief ? " PRODUCTION BRIEF (follow it): " + brief + "." : ""), 8000);
+      const raw = await ask('You are a film writer and director. The idea: """' + idea + '"""\nDesign a ' + mins + '-minute ' + (animated ? "animated " : "") + 'film. Return ONLY JSON, no other text: {"title":"","premise":"2 sentences","look":"2 sentences on colours, light, style","setting":"time of year, weather, places","characters":[{"name":"UPPERCASE NAME","who":"age, sex, personality, what they look like"}],"scenes":[{"title":"","summary":"one short sentence"}]}. Use EXACTLY ' + N + ' scenes in story order with a clear beginning, middle and end. Use at most 8 characters. Names are UPPERCASE letters only. Keep it warm and family friendly unless the idea says otherwise. If the story involves children, make them older (around 10 to 14 years old), not toddlers or babies. If it is a Christmas story, include Santa reading his list — the Book of Names — on Christmas Eve winter night.' + (brief ? " PRODUCTION BRIEF (follow it): " + brief + "." : ""), 8000);
       const o = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1).replace(/```json|```/g, ""));
       const chars = (o.characters || []).map(c => ({ name: String(c.name || "").toUpperCase().replace(/[^A-Z .'&-]/g, "").trim(), who: String(c.who || "") })).filter(c => c.name);
       const scs = (o.scenes || []).slice(0, N);
       if (!scs.length || !chars.length) throw new Error("The outline came back empty. Press Make again.");
       const names = chars.map(c => c.name).join(", ");
+      charLockRef.current = chars.map(c => c.name + ": " + c.who).join("; ").slice(0, 800);
       const out = new Array(scs.length); let done = 0, next = 0;
       const worker = async () => {
         while (next < scs.length) {
@@ -874,7 +876,7 @@ export default function Studio() {
           const clean = t => t.split(/\r?\n/).map(l => l.replace(/[*_`#>]+/g, "").replace(/^\s*(?:[-•]|\d+[.)])\s*/, "").trim()).map(l => { const m = l.match(/^\(?([A-Za-z][A-Za-z .'&-]{0,30}?)\)?\s*[:\-—]\s*(\S.*)$/); if (m && !/^\[/.test(l) && nameSet.includes(m[1].trim().toUpperCase())) return "[" + m[1].trim().toUpperCase() + "] " + m[2]; return l; }).filter(l => /^\[[^\]]+\]\s*\S/.test(l));
           for (let tries = 0; tries < 3 && !lines.length; tries++) {
           try {
-            txt = await ask('You are writing scene ' + (i + 1) + ' of ' + scs.length + ' of the film "' + (o.title || "") + '".\nPremise: ' + (o.premise || "") + '\nLook: ' + (o.look || "") + '\nSetting: ' + (o.setting || "") + '\nCharacters: ' + chars.map(c => c.name + " (" + c.who + ")").join("; ") + '\nStory so far: ' + (i ? scs[i - 1].summary : "(this is the opening)") + '\nThis scene: ' + scs[i].title + " — " + scs[i].summary + '\nNext scene: ' + (scs[i + 1] ? scs[i + 1].summary : "(this is the ending)") + '\n\nWrite ONLY this, nothing else:\nVISUAL: one paragraph on what we see (place, action, camera, light, weather).\nThen 10 to 16 spoken lines, each on its own line as [NAME] line. NAME must be exactly one of: ' + names + '. Each line is one or two natural sentences. No stage directions, no narration unless NARRATOR is in the list.', 1800);
+            txt = await ask('You are writing scene ' + (i + 1) + ' of ' + scs.length + ' of the film "' + (o.title || "") + '".\nPremise: ' + (o.premise || "") + '\nLook: ' + (o.look || "") + '\nSetting: ' + (o.setting || "") + '\nCharacters: ' + chars.map(c => c.name + " (" + c.who + ")").join("; ") + '\nStory so far: ' + (i ? scs[i - 1].summary : "(this is the opening)") + '\nThis scene: ' + scs[i].title + " — " + scs[i].summary + '\nNext scene: ' + (scs[i + 1] ? scs[i + 1].summary : "(this is the ending)") + '\n\nWrite ONLY this, nothing else:\nVISUAL: one paragraph on what we see (place, action, camera, light, weather).\nThen 10 to 16 spoken lines, each on its own line as [NAME] line. NAME must be exactly one of: ' + names + '. Each line is one or two natural sentences. No stage directions, no narration unless NARRATOR is in the list. If this is a Christmas story, include Santa checking his Book of Names (the list of who is naughty and nice). Each character keeps the same appearance, age and clothing described above in every scene.', 1800);
           } catch (e) { }
           lines = clean(txt);
           }
@@ -969,11 +971,13 @@ export default function Studio() {
     try {
       // 1 — scene list
       setStage("Reading your script and writing the scenes…");
+      // Pull character descriptions out of the script's "WHO THEY ARE." block so every engine shot keeps each character looking the same.
+      { const wm = String(script || "").match(/WHO THEY ARE\.\s*([\s\S]*?)(?:\n\s*\n|[A-Z]{4,}\.)/i); if (wm) { const lines = wm[1].split(/\n/).map(l => l.trim()).filter(Boolean); const descs = []; for (const l of lines) { const m = l.match(/^([A-Z][A-Z .'&-]{0,30}):\s*(.+)/); if (m) descs.push(m[1] + ": " + m[2]); } if (descs.length) charLockRef.current = descs.join("; ").slice(0, 800); } }
       const n = Math.max(sceneCount, clips.length);
       let list = parseScenes(script);
       if (list.length) { setStage("Using your " + list.length + " scenes exactly as written…"); }
       else try {
-        const ask = "You are a film director making a " + kind + (title ? (' called "' + title + '"') : "") + ". Write an ordered shot list of EXACTLY " + n + " scenes for a " + minutes + "-minute film.\nLOOK for every scene: " + style + ", " + (GRADES.find(g => g.id === grade) || GRADES[0]).prompt + ". Keep the same characters looking the same in every scene.\nEach scene is one vivid visual paragraph (setting, who is there, light, camera move). No dialogue, no numbering.\nFollow the producer directions exactly." + (brief ? "\nPRODUCTION BRIEF: " + brief + "." : "") + "\n\nNARRATION:\n" + (narr || "(none)") + "\n\nSCRIPT AND PRODUCER DIRECTIONS:\n" + (script || "(none — build it from the narration and photos)") + "\n\nReturn ONLY a JSON array of " + n + " strings.";
+        const ask = "You are a film director making a " + kind + (title ? (' called "' + title + '"') : "") + ". Write an ordered shot list of EXACTLY " + n + " scenes for a " + minutes + "-minute film.\nLOOK for every scene: " + style + ", " + (GRADES.find(g => g.id === grade) || GRADES[0]).prompt + ". Keep the same characters looking the same in every scene — same age, same face, same clothing. Never repeat the same shot or freeze a frame; every scene is fresh new footage with movement.\nEach scene is one vivid visual paragraph (setting, who is there, light, camera move). No dialogue, no numbering.\nFollow the producer directions exactly." + (brief ? "\nPRODUCTION BRIEF: " + brief + "." : "") + "\n\nNARRATION:\n" + (narr || "(none)") + "\n\nSCRIPT AND PRODUCER DIRECTIONS:\n" + (script || "(none — build it from the narration and photos)") + "\n\nReturn ONLY a JSON array of " + n + " strings.";
         const d = await proxyFetch({ model: "claude-sonnet-4-20250514", max_tokens: 8000, messages: [{ role: "user", content: ask }] });
         const raw = (d && d.content ? d.content.filter(x => x.type === "text").map(x => x.text).join("") : "").replace(/```json|```/g, "");
         list = JSON.parse(raw.slice(raw.indexOf("["), raw.lastIndexOf("]") + 1)).map(s => String(s).trim()).filter(Boolean);
@@ -1020,7 +1024,7 @@ export default function Studio() {
 
       // 3 — music
       let mUrl = "";
-      const xmasFilm = /christmas|santa|xmas|sleigh|north pole/i.test(String(title || "") + " " + String(narr || "").slice(0, 4000) + " " + String(script || "").slice(0, 4000));
+      const xmasFilm = /christmas|santa|xmas|sleigh|north pole|santa'?s list|book of names/i.test(String(title || "") + " " + String(narr || "").slice(0, 4000) + " " + String(script || "").slice(0, 4000));
       if (musicMode === "mine" && mySong) mUrl = mySong.url;
       else if (musicMode === "make" || (musicMode === "library" && xmasFilm)) { try { setStage("MandaStrong Engine — composing your music…"); const u = await seRun({ kind: "music", prompt: (musicPrompt || (xmasFilm ? XMAS_MUSIC : (style + " " + kind + " score, " + (MOODS.find(m => m.id === mood) || MOODS[0]).label))) + (mGenre ? ", " + mGenre : "") + (tempo ? ", " + tempo.toLowerCase() + " tempo" : "") + ", instrumental", duration: 60 }, 6); const b = await toBlob(u); await dbPut(projectId.current + "_music", b, {}); mUrl = URL.createObjectURL(b); } catch (e) { setErr("Music: " + e.message + ". Using the library track instead."); mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url); } }
       else if (musicMode === "library") mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url);
