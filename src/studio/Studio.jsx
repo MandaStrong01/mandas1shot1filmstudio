@@ -651,7 +651,7 @@ export default function Studio() {
   }
 
   async function makeScene(i, text, list) {
-    const look = style + " style, " + (GRADES.find(g => g.id === grade) || GRADES[0]).prompt + (enhance ? (animKind ? ", crisp clean linework, rich colour, sharp detail" : ", photorealistic, 35mm film grain, sharp detail") : "") + (shotBrief ? ", " + shotBrief : "") + ", no on-screen text";
+    const look = style + " style, " + (GRADES.find(g => g.id === grade) || GRADES[0]).prompt + (enhance ? (animKind ? ", crisp clean linework, rich colour, sharp detail" : ", photorealistic, 35mm film grain, sharp detail") : "") + (shotBrief ? ", " + shotBrief : "") + (animKind ? ", Pixar-style 3D animated feature film, expressive characters moving and acting all the time, gentle moving camera, never a frozen picture" : "") + (/christmas|santa|xmas|sleigh|north pole/i.test(String(title || "") + " " + String(onePrompt || "").slice(0, 4000) + " " + String(script || "").slice(0, 4000)) ? ", Christmas Eve winter night, snow falling softly, frosted windows, visible breath clouds, glowing snow, deep blue night outdoors, warm gold light indoors" : "") + ", no on-screen text";
     const plan = planRef.current[i] || null;
     const photo = plan && plan.photo >= 0 && photos[plan.photo] ? photos[plan.photo].dataUrl : "";
     const setS = (patch) => setScenes(p => p.map((s, k) => k === i ? { ...s, ...patch } : s));
@@ -678,8 +678,9 @@ export default function Studio() {
     }
     // No matched picture? Take a frame out of one of YOUR clips (a different clip and moment each time) so the engine keeps your look.
     let grab = "";
+    const refPhoto = (!photo && !clips.length && photos.length) ? photos[i % photos.length].dataUrl : "";
     if (!blob && clips.length && !photo) { const gc = clips[(i + reuseN.current) % clips.length]; if (gc && gc.blob) grab = await grabFrame(gc.blob, 0.25 + ((i * 37) % 50) / 100); }
-    if (!blob && !free()) { try { blob = await toBlob(await seRun({ kind: "video", prompt: text + "\n" + look, image: photo || grab })); engineFails.current = 0; } catch (e) { note = e.message; if (e.nocredit) { noCredit.current = true; setStage("Engine is out of credit — using your own clips and images."); } } }
+    if (!blob && !free()) { try { blob = await toBlob(await seRun({ kind: "video", prompt: text + "\n" + look, image: photo || grab || refPhoto })); engineFails.current = 0; } catch (e) { note = e.message; if (e.nocredit) { noCredit.current = true; setStage("Engine is out of credit — using your own clips and images."); } } }
     // Replicate/stock finished or failed: the engine makes its own moving shot from a frame of YOUR clip or image (same look), before anything else.
     const stretchSrc = photo || (photos.length ? photos[i % photos.length].dataUrl : "") || grab;
     if (!blob && stretchSrc) { try { const b = await stillToClip(stretchSrc, 7, i); if (b) { blob = b; source = "engine still from your footage"; } } catch (e) { } }
