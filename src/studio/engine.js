@@ -156,11 +156,30 @@ function msPlaySequence(ctx,dests,blobs,durs,gapSec){
   return {total:acc,stop:()=>{stopped=true;for(const s of live){try{s.stop();}catch(e){}}}};
 }
 
+// The writing service is a paid service. Every call must carry the signed-in
+// user's login token, the same as the render and voice calls, and the request
+// shape is fixed here so a caller cannot ask for a different model or a bigger
+// job than the app needs.
+const PROXY_MODEL="claude-sonnet-4-20250514";
+const PROXY_MAX_TOKENS=8000;
+const PROXY_MAX_CHARS=120000;
 async function proxyFetch(body){
+  const headers=await engineAuthHeaders();
+  if(!headers.Authorization) throw new Error("Log in first to use the writer.");
+  const msgs=((body&&body.messages)||[]).map(m=>({
+    role:m&&m.role==="assistant"?"assistant":"user",
+    content:String((m&&m.content)||"").slice(0,PROXY_MAX_CHARS)
+  })).filter(m=>m.content);
+  if(!msgs.length) throw new Error("Nothing to write yet.");
+  const safeBody={
+    model:PROXY_MODEL,
+    max_tokens:Math.max(256,Math.min(PROXY_MAX_TOKENS,Number(body&&body.max_tokens)||4000)),
+    messages:msgs
+  };
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),55000);
   try{
-    const res=await fetch("https://wvkqnrqcnoztajxxzyxc.supabase.co/functions/v1/claude-proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:controller.signal});
+    const res=await fetch("https://wvkqnrqcnoztajxxzyxc.supabase.co/functions/v1/claude-proxy",{method:"POST",headers,body:JSON.stringify(safeBody),signal:controller.signal});
     clearTimeout(timeout);
     return res.json();
   }catch(e){clearTimeout(timeout);throw e;}

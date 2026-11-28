@@ -111,12 +111,28 @@ const load = (k, d) => { try { const v = localStorage.getItem("mfs_" + k); retur
 const save = (k, v) => { try { localStorage.setItem("mfs_" + k, JSON.stringify(v)); } catch (e) { } };
 const readAsDataURL = (blob) => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => res(""); r.readAsDataURL(blob); });
 
+// Keeps the app's own short, friendly messages and never shows raw technical
+// detail from the film server (job internals, web or database errors, stack text).
+const safeMsg = (e) => {
+  const m = String((e && e.message) || e || "").trim();
+  if (!m) return "Something went wrong. Please try again.";
+  const technical = /(\bat\s+\w+\s*\(|https?:\/\/|[{}<>]|\b(stack|TypeError|SyntaxError|ReferenceError|undefined is not|null is not|fetch failed|NetworkError|ECONN|ETIMEDOUT|500|502|503|sql|SQL|constraint|relation|column|policy|duplicate key|JWT|token)\b)/;
+  if (m.length > 160 || technical.test(m)) return "Something went wrong. Please try again.";
+  return m;
+};
+
 // ── IndexedDB: every finished scene is kept, so a render is never lost ──
 const DBN = "mfs_db";
 const idb = () => new Promise((res, rej) => { const r = indexedDB.open(DBN, 1); r.onupgradeneeded = e => e.target.result.createObjectStore("f", { keyPath: "id" }); r.onsuccess = e => res(e.target.result); r.onerror = rej; });
 async function dbPut(id, blob, meta) { try { const db = await idb(); const tx = db.transaction("f", "readwrite"); tx.objectStore("f").put({ id, blob, meta: meta || {} }); await new Promise(r => { tx.oncomplete = r; tx.onerror = r; }); } catch (e) { } }
 async function dbAll() { try { const db = await idb(); return await new Promise(res => { const q = db.transaction("f").objectStore("f").getAll(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); }); } catch (e) { return []; } }
 async function dbClear(prefix) { try { const all = await dbAll(); const db = await idb(); const tx = db.transaction("f", "readwrite"); for (const x of all) if (String(x.id).startsWith(prefix)) tx.objectStore("f").delete(x.id); await new Promise(r => { tx.oncomplete = r; tx.onerror = r; }); } catch (e) { } }
+// Logging out clears this device: scripts, narration, uploaded media and settings
+// are not left behind for the next person using the same browser.
+async function wipeLocal() {
+  try { const keys = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith("mfs_") && k !== "mfs_auth") keys.push(k); } for (const k of keys) localStorage.removeItem(k); } catch (e) { }
+  try { await dbClear(""); } catch (e) { }
+}
 
 // ── MandaStrong Engine (video / music / image) ──
 // A throttled request is NOT a failure and NOT "out of credit": wait out the limit and send it again by itself.
@@ -289,7 +305,7 @@ export default function Studio() {
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [authMsg, setAuthMsg] = useState("");
   const [plan, setPlan] = useState("studio");
-  useEffect(() => { supabase.auth.getSession().then(({ data }) => setUser(data?.session?.user || null)); const { data: sub } = supabase.auth.onAuthStateChange((ev, s) => { if (s && s.user) setUser(s.user); else if (ev === "SIGNED_OUT") setUser(null); }); return () => { try { sub.subscription.unsubscribe(); } catch (e) { } }; }, []);
+  useEffect(() => { supabase.auth.getSession().then(({ data }) => setUser(data?.session?.user || null)); const { data: sub } = supabase.auth.onAuthStateChange((ev, s) => { if (s && s.user) setUser(s.user); else if (ev === "SIGNED_OUT") { setUser(null); setSubActive(false); setPlan("starter"); } }); return () => { try { sub.subscription.unsubscribe(); } catch (e) { } }; }, []);
   // Owner / admin (and paid Studio accounts) always get the Studio plan with everything on, no watermark.
   useEffect(() => { (async () => {
     if (!user) return;
@@ -301,9 +317,24 @@ export default function Studio() {
       if ((role && role.role === "admin") || (sub && sub.status === "active")) setSubActive(true);
     } catch (e) { }
   })(); }, [user]);
-  const logIn = async () => { setAuthMsg("Logging in…"); const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pw }); setAuthMsg(error ? error.message : ""); };
-  const signUp = async () => { setAuthMsg("Creating your account…"); const { error } = await supabase.auth.signUp({ email: email.trim(), password: pw }); setAuthMsg(error ? error.message : "Account created. Check your email if asked to confirm, then log in."); };
-  const logOut = async () => { await supabase.auth.signOut(); };
+  const logIn = async () => {
+    if (!email.trim() || !pw) { setAuthMsg("Enter your email and password."); return; }
+    setAuthMsg("Logging in…");
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pw });
+    // One neutral message for every failure, so the form never says which
+    // emails have accounts or what state an account is in.
+    setAuthMsg(error ? "That email and password did not match. Check them and try again." : "");
+  };
+  const signUp = async () => {
+    const em = email.trim();
+    if (!em || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)) { setAuthMsg("Enter a valid email address."); return; }
+    if (pw.length < 10) { setAuthMsg("Choose a password of at least 10 characters."); return; }
+    setAuthMsg("Creating your account…");
+    await supabase.auth.signUp({ email: em, password: pw });
+    // Same answer whether or not that email already has an account.
+    setAuthMsg("Check your email to finish setting up your account, then log in.");
+  };
+  const logOut = async () => { await supabase.auth.signOut(); await wipeLocal(); };
   const pay = () => { const p = PLANS.find(x => x.id === plan) || PLANS[1]; const em = (user && user.email) || email; window.open(p.link + (em ? "?prefilled_email=" + encodeURIComponent(em) : ""), "_blank", "noopener"); };
 
   // ── inputs (all remembered) ──
@@ -454,7 +485,7 @@ export default function Studio() {
       setVoiceMode("mine"); if (musicMode === "off") setMusicMode("library");
       if (narrUrl && myRec && narrUrl === myRec.url) { setNarrSecs(comp.recSecs + secs); setNarrText((narr || "").trim()); }
       setComp({ ...comp, busy: false, msg: "Done. Your recording plays first, then the engine finishes in " + which + "." + (r.failed ? " " + r.failed + " of " + r.total + " parts failed — press again to redo." : "") });
-    } catch (e) { setComp({ ...comp, busy: false, msg: "Could not finish the narration: " + e.message }); }
+    } catch (e) { setComp({ ...comp, busy: false, msg: "Could not finish the narration: " + safeMsg(e) }); }
   };
   const clearTail = async () => { setTail(null); try { const db = await idb(); const tx = db.transaction("f", "readwrite"); tx.objectStore("f").delete("mfs_tail"); } catch (e) { } };
   const [mySong, setMySong] = useState(null);
@@ -567,7 +598,7 @@ export default function Studio() {
         if (p.video) { setLsTest({ msg: "Done." + (d.credits ? " It used about " + d.credits + " credits." : "") + " Play it below.", url: p.video }); return; }
       }
       throw new Error("it took too long");
-    } catch (e) { setLsTest({ msg: "Lip sync test: " + (e.message || e) }); }
+    } catch (e) { setLsTest({ msg: "Lip sync test: " + safeMsg(e) }); }
   };
 
   async function voiceIt(text, lang) {
@@ -680,7 +711,7 @@ export default function Studio() {
     let grab = "";
     const refPhoto = (!photo && !clips.length && photos.length) ? photos[i % photos.length].dataUrl : "";
     if (!blob && clips.length && !photo) { const gc = clips[(i + reuseN.current) % clips.length]; if (gc && gc.blob) grab = await grabFrame(gc.blob, 0.25 + ((i * 37) % 50) / 100); }
-    if (!blob && !free()) { try { blob = await toBlob(await seRun({ kind: "video", prompt: text + "\n" + look, image: photo || grab || refPhoto })); engineFails.current = 0; } catch (e) { note = e.message; if (e.nocredit) { noCredit.current = true; setStage("Engine is out of credit — using your own clips and images."); } } }
+    if (!blob && !free()) { try { blob = await toBlob(await seRun({ kind: "video", prompt: text + "\n" + look, image: photo || grab || refPhoto })); engineFails.current = 0; } catch (e) { note = safeMsg(e); if (e.nocredit) { noCredit.current = true; setStage("Engine is out of credit — using your own clips and images."); } } }
     // Replicate/stock finished or failed: the engine makes its own moving shot from a frame of YOUR clip or image (same look), before anything else.
     const stretchSrc = photo || (photos.length ? photos[i % photos.length].dataUrl : "") || grab;
     if (!blob && stretchSrc) { try { const b = await stillToClip(stretchSrc, 7, i); if (b) { blob = b; source = "engine still from your footage"; } } catch (e) { } }
@@ -832,7 +863,7 @@ export default function Studio() {
       const ext = (v.blob.type || "").includes("wav") ? "wav" : "mp3";
       await saveFile({ blob: v.blob, name: (title || "My_Film").replace(/[^\w]+/g, "_") + "_voices." + ext, url: URL.createObjectURL(v.blob) });
       setRvMsg("Done. Your voices are on the film and the audio file is saved. Save the film again to get the new version.");
-    } catch (e) { setErr("Voices: " + e.message); setRvMsg(""); }
+    } catch (e) { setErr("Voices: " + safeMsg(e)); setRvMsg(""); }
     setBusy(false);
   }
   useEffect(() => { if (pendingRV && narr && !busy) { setPendingRV(false); reVoice(); } }, [pendingRV, narr, script]);
@@ -909,7 +940,7 @@ export default function Studio() {
       setDesigning(false); setStage("Your film is written: " + scs.length + " scenes, " + sp.length + " spoken lines. Making it now…");
       setAutoMake(true);
     } catch (e) {
-      setDesigning(false); setErr(String((e && e.message) || e)); setStage("");
+      setDesigning(false); setErr(safeMsg(e)); setStage("");
     }
   }
   // WHOLE-FILM LIP SYNC: every shot where a character speaks is sent once, with that shot's own line placed at the right moment
@@ -1012,7 +1043,7 @@ export default function Studio() {
         catch (e) {
           if (e && e.stopFilm) throw e;
           if (myRec) { nUrl = myRec.url; nText = spokenText; nSecs = (await audioSecs(myRec.blob)) || (await msBlobSeconds(myRec.blob)); await dbPut(projectId.current + "_narr", myRec.blob, { text: nText, secs: nSecs }); if (tail) nSecs += tail.secs; setStage("Engine has no credit. Using your own recording as the voice."); }
-          else setErr("Voice: " + e.message + ". The film will be made without narration.");
+          else setErr("Voice: " + safeMsg(e) + ". The film will be made without narration.");
         }
       }
       setNarrUrl(nUrl); setNarrText(nText); setNarrSecs(nSecs); setPct(14);
@@ -1025,7 +1056,7 @@ export default function Studio() {
       let mUrl = "";
       const xmasFilm = /christmas|santa|xmas|sleigh|north pole|santa'?s list|book of names/i.test(String(title || "") + " " + String(narr || "").slice(0, 4000) + " " + String(script || "").slice(0, 4000));
       if (musicMode === "mine" && mySong) mUrl = mySong.url;
-      else if (musicMode === "make" || (musicMode === "library" && xmasFilm)) { try { setStage("MandaStrong Engine — composing your music…"); const u = await seRun({ kind: "music", prompt: (musicPrompt || (xmasFilm ? XMAS_MUSIC : (style + " " + kind + " score, " + (MOODS.find(m => m.id === mood) || MOODS[0]).label))) + (mGenre ? ", " + mGenre : "") + (tempo ? ", " + tempo.toLowerCase() + " tempo" : "") + ", instrumental", duration: 60 }, 6); const b = await toBlob(u); await dbPut(projectId.current + "_music", b, {}); mUrl = URL.createObjectURL(b); } catch (e) { setErr("Music: " + e.message + ". Using the library track instead."); mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url); } }
+      else if (musicMode === "make" || (musicMode === "library" && xmasFilm)) { try { setStage("MandaStrong Engine — composing your music…"); const u = await seRun({ kind: "music", prompt: (musicPrompt || (xmasFilm ? XMAS_MUSIC : (style + " " + kind + " score, " + (MOODS.find(m => m.id === mood) || MOODS[0]).label))) + (mGenre ? ", " + mGenre : "") + (tempo ? ", " + tempo.toLowerCase() + " tempo" : "") + ", instrumental", duration: 60 }, 6); const b = await toBlob(u); await dbPut(projectId.current + "_music", b, {}); mUrl = URL.createObjectURL(b); } catch (e) { setErr("Music: " + safeMsg(e) + ". Using the library track instead."); mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url); } }
       else if (musicMode === "library") mUrl = await libraryMusic((MOODS.find(m => m.id === mood) || MOODS[0]).url);
       setMusicUrl(mUrl); setPct(24);
 
@@ -1038,11 +1069,11 @@ export default function Studio() {
       await worker();
       // Any scene that came back empty gets one more try before the film is joined.
       for (const i of failed) { setStage("Trying scene " + (i + 1) + " again…"); { const b2 = await makeScene(i, list[i], { firstVoice }); if (b2) shotBlobs[i] = b2; } }
-      if (lipSync && lsLines && !freeMode) { try { await lipSyncFilm(lsLines, shotBlobs, syncPlan); } catch (e) { setErr("Lip sync stopped: " + (e.message || e) + ". The film keeps its original pictures."); } }
+      if (lipSync && lsLines && !freeMode) { try { await lipSyncFilm(lsLines, shotBlobs, syncPlan); } catch (e) { setErr("Lip sync stopped: " + safeMsg(e) + ". The film keeps its original pictures."); } }
       // Then every scene is joined into ONE film file automatically.
       autoJoin.current = true;
       setPct(100); setStage("All scenes made. Joining them into one film — keep this tab open."); setDone(true);
-    } catch (e) { setErr("Something stopped the film: " + e.message); }
+    } catch (e) { setErr("Something stopped the film: " + safeMsg(e)); }
     try { wl && wl.release(); } catch (e) { }
     setBusy(false);
   };
@@ -1225,7 +1256,7 @@ export default function Studio() {
     for (let j = 0; j < jobs.length && !stopExp.current; j++) {
       setExp({ busy: true, pct: 1, msg: "Making file " + (j + 1) + " of " + jobs.length + " — keep this tab open", files });
       try { const f = await renderFile({ ...jobs[j], preview: pvRef, onProgress: (p, s) => setExp(x => ({ ...x, pct: Math.round(p * 100), msg: "File " + (j + 1) + " of " + jobs.length + " · " + Math.round(p * 100) + "% · " + fmt(s) })) }); files.push(f); await dbPut(projectId.current + "_final_" + f.name, f.blob, { name: f.name }); }
-      catch (e) { setExp(x => ({ ...x, msg: "Export problem: " + e.message })); }
+      catch (e) { setExp(x => ({ ...x, msg: "Export problem: " + safeMsg(e) })); }
     }
     try { wl && wl.release(); } catch (e) { }
     setExp({ busy: false, pct: 100, msg: stopExp.current ? "Stopped." : "Ready. Tap a file to save it.", files });
@@ -1244,7 +1275,7 @@ export default function Studio() {
   const joinCall = async (body) => { const r = await fetch(JOIN, { method: "POST", headers: await engineAuthHeaders(), body: JSON.stringify(body) }); const d = await r.json(); if (d.error) throw new Error(d.error); return d; };
   const pollJoin = async (jobId) => {
     for (;;) {
-      let d = null; try { d = await joinCall({ action: "status", jobId }); } catch (e) { if (/wasn't found|Log in/i.test(e.message)) { save("joinjob", ""); setJoin(j => ({ ...j, busy: false, msg: e.message })); return; } }
+      let d = null; try { d = await joinCall({ action: "status", jobId }); } catch (e) { if (/wasn't found|Log in/i.test(String(e && e.message))) { save("joinjob", ""); setJoin(j => ({ ...j, busy: false, msg: safeMsg(e) })); return; } }
       if (d && d.status === "done") { save("joinjob", ""); setJoin({ busy: false, msg: "Your film is ready. Tap DOWNLOAD MY FILM.", pct: 100, urls: d.urls || [], fileName: d.fileName || "My_Film.mp4" }); return; }
       if (d && d.status === "failed") { save("joinjob", ""); setJoin({ busy: false, msg: "The film server couldn't join it: " + (d.error || "unknown problem") + ". Press DOWNLOAD to try again.", pct: 0, urls: [], fileName: "" }); return; }
       if (d) setJoin(j => ({ ...j, busy: true, msg: (d.progress || "Waiting for the film server") + " — you can close this page and come back.", pct: d.status === "running" ? 60 : 40 }));
@@ -1296,7 +1327,7 @@ export default function Studio() {
       setJoin(j => ({ ...j, pct: 40, msg: "Sent. The film server is joining it into one film. You can close this page and come back." }));
       try { wl && wl.release(); } catch (e) { }
       pollJoin(jobId);
-    } catch (e) { try { wl && wl.release(); } catch (_) { } setJoin({ busy: false, msg: "Couldn't send the film: " + e.message, pct: 0, urls: [], fileName: "" }); }
+    } catch (e) { try { wl && wl.release(); } catch (_) { } setJoin({ busy: false, msg: "Couldn't send the film: " + safeMsg(e), pct: 0, urls: [], fileName: "" }); }
   };
   // Packs every finished scene + the narration + music into ONE .zip to send for joining.
   const [packMsg, setPackMsg] = useState("");
@@ -1315,7 +1346,7 @@ export default function Studio() {
       const zip = await makeZip(entries, (i, n) => setPackMsg("Packing file " + i + " of " + n + "…"));
       setPackMsg("Packed: " + Math.round(zip.size / 1048576) + " MB. Choose Save to Files.");
       await saveFile({ blob: zip, name: (title || "My_Film").replace(/[^\w]+/g, "_") + "_film_files.zip", url: URL.createObjectURL(zip) });
-    } catch (e) { setPackMsg("Couldn't pack the files: " + e.message); }
+    } catch (e) { setPackMsg("Couldn't pack the files: " + safeMsg(e)); }
   };
   // A film that came back in pieces is put back together on this device, then saved.
   const getJoined = async () => {
